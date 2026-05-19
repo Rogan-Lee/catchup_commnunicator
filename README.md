@@ -20,6 +20,84 @@ uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 ```
 
+## Atlassian setup
+
+The app authenticates to Jira via HTTP Basic with an API token. Follow these
+steps once per environment to populate the `ATLASSIAN_*` and `TEAM_PROJECT_MAP`
+entries in `.env`.
+
+### 1. Issue an API token
+
+1. Open https://id.atlassian.com/manage-profile/security/api-tokens
+2. **Create API token**, label it (e.g. `catchup-communicator-local`), copy the
+   value (`ATATT...`) immediately — it cannot be viewed again.
+3. Set in `.env`:
+   ```env
+   ATLASSIAN_BASE_URL=https://<workspace>.atlassian.net
+   ATLASSIAN_EMAIL=<account-email>
+   ATLASSIAN_API_TOKEN=ATATT...
+   ```
+
+Smoke-test:
+```bash
+set -a; source .env; set +a
+curl -s -u "$ATLASSIAN_EMAIL:$ATLASSIAN_API_TOKEN" \
+  "$ATLASSIAN_BASE_URL/rest/api/3/myself" | jq .accountId
+```
+
+### 2. Find the Team custom field ID
+
+The default `customfield_10001` matches Atlassian's standard Team field. To
+confirm for your site:
+```bash
+curl -s -u "$ATLASSIAN_EMAIL:$ATLASSIAN_API_TOKEN" \
+  "$ATLASSIAN_BASE_URL/rest/api/3/field" \
+  | jq '.[] | select(.name=="Team") | {id, schema: .schema.type}'
+```
+Set the result in `.env`:
+```env
+ATLASSIAN_TEAM_FIELD_ID=customfield_10001
+```
+
+### 3. Resolve Team ARIs and project keys
+
+`TEAM_PROJECT_MAP` is a JSON object whose keys are Atlassian Team ARIs and
+values are Jira project keys.
+
+**Project keys** — list projects matching a name fragment:
+```bash
+curl -s -u "$ATLASSIAN_EMAIL:$ATLASSIAN_API_TOKEN" \
+  "$ATLASSIAN_BASE_URL/rest/api/3/project/search?query=<fragment>" \
+  | jq '.values[] | {key, name}'
+```
+
+**Team ARIs** — for teams that already have at least one Jira issue with the
+Team field set:
+```bash
+curl -s -u "$ATLASSIAN_EMAIL:$ATLASSIAN_API_TOKEN" \
+  --get "$ATLASSIAN_BASE_URL/rest/api/3/search/jql" \
+  --data-urlencode 'jql=cf[10001] is not EMPTY ORDER BY updated DESC' \
+  --data-urlencode "fields=customfield_10001" \
+  --data-urlencode "maxResults=100" \
+  | jq -r '.issues[].fields.customfield_10001 | "\(.id)\t\(.name)"' | sort -u
+```
+For teams with no existing tickets, grab the ID from the Teams directory
+(`https://<workspace>.atlassian.net/jira/people/teams` → click team → trailing
+path segment is the team ID). The ARI format is
+`ari:cloud:identity::team/<team-id>`.
+
+Compose the final mapping as a single line of JSON in `.env`:
+```env
+TEAM_PROJECT_MAP={"ari:cloud:identity::team/<team-id-1>":"<PROJECT_KEY>","ari:cloud:identity::team/<team-id-2>":"<PROJECT_KEY>"}
+```
+
+Notes:
+- `/rest/api/3/search` was removed in 2025; use `/rest/api/3/search/jql`.
+- Use `curl --get --data-urlencode` to keep `&` / spaces out of shell parsing.
+- Multiple teams may map to the same project key — issues are still
+  distinguished by the Team custom field.
+
+
 Endpoints: `GET /health`, `POST /slack/events`, `POST /slack/interactions`,
 `POST /slack/options`.
 
