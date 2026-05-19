@@ -8,7 +8,12 @@ from app.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.db.session import dispose_engine
 from app.deps import get_container
-from app.routers import slack_events, slack_interactions, slack_options
+from app.routers import (
+    slack_events,
+    slack_interactions,
+    slack_options,
+    standup_ingest,
+)
 
 
 @asynccontextmanager
@@ -46,6 +51,7 @@ def create_app() -> FastAPI:
     app.include_router(slack_events.router)
     app.include_router(slack_interactions.router)
     app.include_router(slack_options.router)
+    app.include_router(standup_ingest.router)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

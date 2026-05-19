@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     slack_signing_secret: str = ""
     slack_standup_channels: str = ""
 
+    # Bearer token for the /standup/ingest webhook (edge function → us).
+    # When empty, the endpoint refuses all requests.
+    standup_ingest_token: str = ""
+
     # Atlassian
     atlassian_base_url: str = ""
     atlassian_email: str = ""
