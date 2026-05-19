@@ -4,9 +4,24 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    func,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+# Use JSONB on Postgres, JSON elsewhere (tests run on SQLite).
+JsonType = JSON().with_variant(JSONB(), "postgresql")
+UuidPk = Uuid(as_uuid=True)
 
 
 class Base(DeclarativeBase):
@@ -16,14 +31,12 @@ class Base(DeclarativeBase):
 class StandupEntry(Base):
     __tablename__ = "standup_entries"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UuidPk, primary_key=True, default=uuid.uuid4)
     channel_id: Mapped[str] = mapped_column(String(20), nullable=False)
     slack_message_ts: Mapped[str] = mapped_column(String(30), nullable=False)
     author_slack_id: Mapped[str] = mapped_column(String(20), nullable=False)
     raw_text: Mapped[str] = mapped_column(Text, nullable=False)
-    posted_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    posted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     extraction_status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="pending"
@@ -31,10 +44,10 @@ class StandupEntry(Base):
     extraction_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True),
+        DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
         onupdate=func.now(),
@@ -44,34 +57,29 @@ class StandupEntry(Base):
         back_populates="standup_entry",
         cascade="all, delete-orphan",
         order_by="WorkItem.sequence_no",
+        lazy="selectin",
     )
 
     __table_args__ = (
         UniqueConstraint("channel_id", "slack_message_ts", name="uq_standup_channel_ts"),
         Index("idx_standup_entries_status", "extraction_status"),
-        Index(
-            "idx_standup_entries_author",
-            "author_slack_id",
-            "posted_at",
-        ),
+        Index("idx_standup_entries_author", "author_slack_id", "posted_at"),
     )
 
 
 class WorkItem(Base):
     __tablename__ = "work_items"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UuidPk, primary_key=True, default=uuid.uuid4)
     standup_entry_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+        UuidPk,
         ForeignKey("standup_entries.id", ondelete="CASCADE"),
         nullable=False,
     )
     sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    extracted_slots: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    confirmed_slots: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    extracted_slots: Mapped[dict[str, Any]] = mapped_column(JsonType, nullable=False)
+    confirmed_slots: Mapped[dict[str, Any] | None] = mapped_column(JsonType, nullable=True)
 
     jira_team_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     jira_project_key: Mapped[str | None] = mapped_column(String(20), nullable=True)
@@ -87,13 +95,13 @@ class WorkItem(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     confirmed_at: Mapped[datetime | None] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=True
+        DateTime(timezone=True), nullable=True
     )
     jira_created_at: Mapped[datetime | None] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=True
+        DateTime(timezone=True), nullable=True
     )
 
     standup_entry: Mapped[StandupEntry] = relationship(back_populates="work_items")
@@ -108,18 +116,16 @@ class WorkItem(Base):
 class NamingRule(Base):
     __tablename__ = "naming_rules"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UuidPk, primary_key=True, default=uuid.uuid4)
     project_key: Mapped[str] = mapped_column(String(20), nullable=False)
     task_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
     template: Mapped[str] = mapped_column(Text, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True),
+        DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
         onupdate=func.now(),

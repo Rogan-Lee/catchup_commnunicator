@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, status
@@ -9,6 +10,8 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from app.config import get_settings
 from app.core.errors import SlackVerificationError
 from app.core.logging import get_logger
+from app.db.session import session_scope
+from app.deps import get_container
 from app.services.slack.verify import verify_slack_signature
 
 router = APIRouter(prefix="/slack", tags=["slack"])
@@ -107,11 +110,7 @@ async def _enqueue_message(
     text: str,
     event_ts: str | None,
 ) -> None:
-    """Placeholder for the extraction pipeline.
-
-    Wired up to ExtractHandler in the next slice. For now we just log so we can
-    confirm the event arrives end-to-end.
-    """
+    """Run the extraction pipeline in the background."""
     log.info(
         "slack.message.received",
         channel=channel_id,
@@ -120,3 +119,24 @@ async def _enqueue_message(
         text_len=len(text),
         event_ts=event_ts,
     )
+    posted_at = _ts_to_datetime(message_ts)
+    container = get_container()
+    try:
+        async with session_scope() as session:
+            await container.extract_handler.handle_message(
+                session,
+                channel_id=channel_id,
+                message_ts=message_ts,
+                author_slack_id=author_slack_id,
+                text=text,
+                posted_at=posted_at,
+            )
+    except Exception as e:
+        log.exception("slack.extract.failed", error=str(e), ts=message_ts)
+
+
+def _ts_to_datetime(slack_ts: str) -> datetime:
+    try:
+        return datetime.fromtimestamp(float(slack_ts), tz=timezone.utc)
+    except (TypeError, ValueError):
+        return datetime.now(tz=timezone.utc)

@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from app.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.db.session import dispose_engine
+from app.deps import get_container
 from app.routers import slack_events
 
 
@@ -24,6 +25,11 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        try:
+            container = get_container()
+            await container.close()
+        except Exception as e:
+            log.warning("app.container.close_failed", error=str(e))
         await dispose_engine()
         log.info("app.stopped")
 
