@@ -127,11 +127,20 @@ class ExtractHandler:
                     ExtractedWorkItem(task_content=text[:200])
                 ]
                 emit_metric("llm.extract.ok", item_count=len(extracted_items))
-            except LLMError as e:
-                log.warning("extract.llm.failed", error=str(e))
-                entry.extraction_error = str(e)[:500]
+            except Exception as e:
+                # Any extractor failure (LLMError, transport error, SDK bug,
+                # unexpected exception type) degrades to a single-item fallback
+                # so the user still gets a preview card and can publish manually.
+                error_type = type(e).__name__
+                if not isinstance(e, LLMError):
+                    log.exception("extract.llm.unexpected", error_type=error_type)
+                else:
+                    log.warning(
+                        "extract.llm.failed", error=str(e), error_type=error_type
+                    )
+                entry.extraction_error = f"{error_type}: {str(e)[:400]}"
                 extracted_items = [ExtractedWorkItem(task_content=text[:200])]
-                emit_metric("llm.extract.fallback", reason=str(e)[:100])
+                emit_metric("llm.extract.fallback", reason=error_type)
 
             for idx, ex_item in enumerate(extracted_items, start=1):
                 ex_team_id = ex_item.team_id or (team.id if team else None)

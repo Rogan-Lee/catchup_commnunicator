@@ -204,3 +204,38 @@ async def test_handler_falls_back_when_llm_fails(session):
     items = (await session.scalars(select(WorkItem))).all()
     assert len(items) == 1
     assert items[0].task_content == "모호한 메시지"
+
+
+@pytest.mark.asyncio
+async def test_handler_falls_back_on_unexpected_extractor_exception(session):
+    # Non-LLMError (e.g. a transport-level RuntimeError that escaped wrapping)
+    # should still produce a usable preview card.
+    slack = FakeSlack()
+    handler = ExtractHandler(
+        teams_svc=FakeTeams(None),
+        search_svc=FakeSearch(),
+        extractor=FakeExtractor(RuntimeError("transport closed")),
+        slack=slack,
+        team_to_project_map={},
+    )
+
+    await handler.handle_message(
+        session,
+        channel_id="C1",
+        message_ts="3.3",
+        author_slack_id="U1",
+        text="OAuth 구글 연동 마무리",
+        posted_at=datetime.now(tz=timezone.utc),
+    )
+
+    entry = await session.scalar(select(StandupEntry))
+    assert entry.extraction_status == "completed"
+    assert "RuntimeError" in (entry.extraction_error or "")
+
+    items = (await session.scalars(select(WorkItem))).all()
+    assert len(items) == 1
+    assert items[0].task_content == "OAuth 구글 연동 마무리"
+
+    # Preview card must still be posted so the user can publish manually.
+    assert len(slack.posted) == 1
+    assert slack.posted[0]["thread_ts"] == "3.3"
