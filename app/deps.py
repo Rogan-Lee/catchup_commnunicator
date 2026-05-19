@@ -8,6 +8,7 @@ from app.handlers.publish import PublishHandler
 from app.services.atlassian.http import build_jira_client, build_teams_client
 from app.services.atlassian.jira_issues import JiraIssueService
 from app.services.atlassian.jira_search import JiraSearchService
+from app.services.atlassian.parent_resolver import ParentTicketResolver
 from app.services.atlassian.teams import AtlassianTeamsService
 from app.services.cache import CacheLayer, build_redis_client
 from app.services.llm.base import LLMExtractor
@@ -43,6 +44,7 @@ class Container:
         self.issue_svc = JiraIssueService(
             self.jira_http, team_field_id=settings.atlassian_team_field_id or None
         )
+        self.parent_resolver = ParentTicketResolver(self.search_svc)
 
         self.slack = SlackClient(settings.slack_bot_token)
         self.extractor: LLMExtractor = _build_extractor(settings)
@@ -54,6 +56,7 @@ class Container:
             slack=self.slack,
             team_to_project_map=settings.team_to_project_map,
             publish_enabled=True,
+            parent_resolver=self.parent_resolver,
         )
         self.publish_handler = PublishHandler(
             jira_svc=self.issue_svc,

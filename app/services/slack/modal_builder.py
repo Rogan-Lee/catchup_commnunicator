@@ -99,14 +99,10 @@ def build_work_item_modal(
         )
     )
 
-    # Parent ticket: plain text input for now (W3 swaps to external_select).
     blocks.append(
-        _text_input(
-            block_id=BID_PARENT_ISSUE,
-            action_id=AID_PARENT_ISSUE,
-            label="부모 티켓 (Jira 키, 예: CATCHUP-42)",
-            initial_value=initial_parent_key,
-            optional=True,
+        _parent_issue_block(
+            candidates=parent_candidates or [],
+            initial_key=initial_parent_key if is_issue_key(initial_parent_key) else None,
         )
     )
 
@@ -151,8 +147,61 @@ def parse_modal_values(view: dict[str, Any]) -> dict[str, Any]:
         "task_type": selected(BID_TASK_TYPE, AID_TASK_TYPE),
         "parent_feature": text(BID_PARENT_FEATURE, AID_PARENT_FEATURE),
         "task_content": text(BID_TASK_CONTENT, AID_TASK_CONTENT),
-        "parent_issue_key": text(BID_PARENT_ISSUE, AID_PARENT_ISSUE),
+        "parent_issue_key": selected(BID_PARENT_ISSUE, AID_PARENT_ISSUE),
     }
+
+
+def candidate_options(candidates: list[tuple[str, str]]) -> list[dict[str, Any]]:
+    """Convert (key, summary) tuples to Slack option dicts for external_select."""
+    return [
+        {
+            "text": {
+                "type": "plain_text",
+                "text": _truncate(f"{key} — {summary}", 75),
+            },
+            "value": key,
+        }
+        for key, summary in candidates
+    ]
+
+
+def _truncate(s: str, limit: int) -> str:
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def _parent_issue_block(
+    *,
+    candidates: list[tuple[str, str]],
+    initial_key: str | None,
+) -> dict[str, Any]:
+    options = candidate_options(candidates)
+    element: dict[str, Any] = {
+        "type": "external_select",
+        "action_id": AID_PARENT_ISSUE,
+        "min_query_length": 1,
+        "placeholder": {"type": "plain_text", "text": "검색하여 선택..."},
+    }
+    if initial_key:
+        initial = next((o for o in options if o["value"] == initial_key), None)
+        if not initial:
+            initial = {
+                "text": {"type": "plain_text", "text": initial_key},
+                "value": initial_key,
+            }
+        element["initial_option"] = initial
+    return {
+        "type": "input",
+        "block_id": BID_PARENT_ISSUE,
+        "label": {"type": "plain_text", "text": "부모 티켓"},
+        "element": element,
+        "optional": True,
+    }
+
+
+def is_issue_key(value: str | None) -> bool:
+    import re
+
+    return bool(value) and bool(re.match(r"^[A-Z][A-Z0-9_]*-\d+$", value or ""))
 
 
 def unpack_metadata(view: dict[str, Any]) -> dict[str, str]:

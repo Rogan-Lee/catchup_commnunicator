@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.errors import JiraError, NotFoundError
 from app.core.logging import get_logger
+from app.core.metrics import emit as emit_metric
 from app.db.models import StandupEntry, WorkItem
 from app.handlers.extract import is_issue_key
 from app.services.atlassian.jira_issues import (
@@ -107,6 +108,13 @@ class PublishHandler:
             wi.jira_created_at = datetime.now(tz=timezone.utc)
             await session.commit()
 
+            emit_metric(
+                "publish.created",
+                issue_key=created.key,
+                project_key=wi.jira_project_key,
+                task_type=wi.task_type,
+                edited=_was_edited(wi),
+            )
             await self._reply(entry, f"✅ <{created.url}|{created.key}> 생성됨\n> {summary}")
             return created
 
@@ -115,6 +123,7 @@ class PublishHandler:
             wi.status = "failed"
             wi.error_message = str(e)[:500]
             await session.commit()
+            emit_metric("publish.failed", error=str(e)[:100])
             await self._reply(entry, f"❌ 티켓 생성 실패: {str(e)[:200]}")
             raise
 
@@ -147,6 +156,21 @@ def _apply_slots(wi: WorkItem, slots: dict) -> None:
     elif "parent_issue_key" in slots:
         # Empty string means user cleared it.
         wi.parent_issue_key = None
+
+
+def _was_edited(wi: WorkItem) -> bool:
+    """True when the user changed any meaningful slot before submitting."""
+    extracted = wi.extracted_slots or {}
+    confirmed = wi.confirmed_slots or {}
+    for key, ex_key in (
+        ("task_content", "task_content"),
+        ("task_type", "task_type"),
+        ("parent_feature", "parent_feature"),
+        ("parent_issue_key", "parent_issue_hint"),
+    ):
+        if (confirmed.get(key) or None) != (extracted.get(ex_key) or None):
+            return True
+    return False
 
 
 def _build_description(entry: StandupEntry, wi: WorkItem) -> str:

@@ -156,8 +156,13 @@ async def _open_modal_task(*, work_item_id: uuid.UUID, trigger_id: str) -> None:
                 log.warning("modal.open.teams_failed", error=str(e))
                 teams = []
             project_keys = sorted(set(container.settings.team_to_project_map.values()))
+            stored = (wi.extracted_slots or {}).get("parent_candidates") or []
+            candidates = [(c["key"], c.get("summary", "")) for c in stored]
             view = build_work_item_modal(
-                wi, teams=teams, project_keys=project_keys
+                wi,
+                teams=teams,
+                project_keys=project_keys,
+                parent_candidates=candidates,
             )
         await container.slack.web.views_open(trigger_id=trigger_id, view=view)
     except Exception as e:

@@ -8,8 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import LLMError
 from app.core.logging import get_logger
+from app.core.metrics import emit as emit_metric
 from app.db.models import StandupEntry, WorkItem
 from app.services.atlassian.jira_search import JiraSearchService
+from app.services.atlassian.parent_resolver import ParentTicketResolver
 from app.services.atlassian.teams import AtlassianTeamsService
 from app.services.atlassian.types import AtlassianUser
 from app.services.llm.base import LLMExtractor
@@ -19,7 +21,7 @@ from app.services.slack.preview_card import build_preview_blocks
 
 log = get_logger(__name__)
 
-_ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$")
+_ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*-\d+$")
 
 
 def is_issue_key(value: str | None) -> bool:
@@ -38,6 +40,7 @@ class ExtractHandler:
         slack: SlackClient,
         team_to_project_map: dict[str, str],
         publish_enabled: bool = False,
+        parent_resolver: ParentTicketResolver | None = None,
     ):
         self.teams_svc = teams_svc
         self.search_svc = search_svc
@@ -45,6 +48,7 @@ class ExtractHandler:
         self.slack = slack
         self.team_to_project_map = team_to_project_map
         self.publish_enabled = publish_enabled
+        self.parent_resolver = parent_resolver or ParentTicketResolver(search_svc)
 
     async def handle_message(
         self,
@@ -122,10 +126,12 @@ class ExtractHandler:
                 extracted_items = list(result.items) or [
                     ExtractedWorkItem(task_content=text[:200])
                 ]
+                emit_metric("llm.extract.ok", item_count=len(extracted_items))
             except LLMError as e:
                 log.warning("extract.llm.failed", error=str(e))
                 entry.extraction_error = str(e)[:500]
                 extracted_items = [ExtractedWorkItem(task_content=text[:200])]
+                emit_metric("llm.extract.fallback", reason=str(e)[:100])
 
             for idx, ex_item in enumerate(extracted_items, start=1):
                 ex_team_id = ex_item.team_id or (team.id if team else None)
@@ -135,16 +141,38 @@ class ExtractHandler:
                     else project_key
                 )
                 hint = ex_item.parent_issue_hint
+                slot_dict = ex_item.model_dump(mode="json")
+
+                candidates = []
+                if ex_project_key:
+                    try:
+                        candidates = await self.parent_resolver.resolve_candidates(
+                            project_key=ex_project_key,
+                            hint=hint,
+                            author_account_id=(
+                                atlassian_user.account_id if atlassian_user else None
+                            ),
+                        )
+                    except Exception as e:
+                        log.warning("extract.parent_resolve.failed", error=str(e))
+                slot_dict["parent_candidates"] = [
+                    {"key": c.key, "summary": c.summary, "source": c.source}
+                    for c in candidates
+                ]
+                resolved_parent = (
+                    hint if is_issue_key(hint) else (candidates[0].key if candidates else None)
+                )
+
                 wi = WorkItem(
                     standup_entry_id=entry.id,
                     sequence_no=idx,
-                    extracted_slots=ex_item.model_dump(mode="json"),
+                    extracted_slots=slot_dict,
                     jira_team_id=ex_team_id,
                     jira_project_key=ex_project_key,
                     task_type=ex_item.task_type.value if ex_item.task_type else None,
                     parent_feature=ex_item.parent_feature,
                     task_content=ex_item.task_content,
-                    parent_issue_key=hint if is_issue_key(hint) else None,
+                    parent_issue_key=resolved_parent,
                     status="pending",
                 )
                 session.add(wi)

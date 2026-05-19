@@ -20,12 +20,27 @@ uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 ```
 
-Health probe: `GET /health`. Slack events: `POST /slack/events`.
+Endpoints: `GET /health`, `POST /slack/events`, `POST /slack/interactions`,
+`POST /slack/options`.
 
 Run tests:
 
 ```bash
 uv run pytest
+```
+
+Ops CLI:
+
+```bash
+# Re-extract a specific Slack message
+uv run python -m app.cli reprocess 1700000000.000100 --channel C0123ABCDEF
+
+# Accuracy report (% of tickets created without user edits)
+uv run python -m app.cli accuracy --days 7
+
+# Naming-rule export / import
+uv run python -m app.cli rules export > rules.json
+uv run python -m app.cli rules import rules.json
 ```
 
 ## Layout

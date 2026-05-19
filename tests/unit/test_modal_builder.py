@@ -90,7 +90,9 @@ def test_parse_modal_values_reads_state():
                 BID_TASK_TYPE: {"task_type_select": {"selected_option": {"value": "Bug"}}},
                 "parent_feature_block": {"parent_feature_input": {"value": "로그인"}},
                 BID_TASK_CONTENT: {"task_content_input": {"value": " OAuth "}},
-                BID_PARENT_ISSUE: {"parent_issue_input": {"value": "CATCHUP-42"}},
+                BID_PARENT_ISSUE: {
+                    "parent_issue_input": {"selected_option": {"value": "CATCHUP-42"}}
+                },
             }
         }
     }
@@ -103,6 +105,32 @@ def test_parse_modal_values_reads_state():
         "task_content": "OAuth",
         "parent_issue_key": "CATCHUP-42",
     }
+
+
+def test_modal_parent_block_is_external_select_with_candidates():
+    wi = _wi(task_content="X")
+    view = build_work_item_modal(
+        wi,
+        teams=[Team(id="t1", name="Backend")],
+        project_keys=["CATCHUP"],
+        parent_candidates=[("CATCHUP-1", "OAuth 통합"), ("CATCHUP-2", "결제")],
+    )
+    parent_block = next(b for b in view["blocks"] if b.get("block_id") == BID_PARENT_ISSUE)
+    assert parent_block["element"]["type"] == "external_select"
+    assert parent_block["element"]["min_query_length"] == 1
+    assert parent_block["optional"] is True
+
+
+def test_modal_parent_initial_option_when_key_provided():
+    wi = _wi(task_content="X", parent_issue_key="CATCHUP-42")
+    view = build_work_item_modal(
+        wi,
+        teams=[Team(id="t1", name="Backend")],
+        project_keys=["CATCHUP"],
+        parent_candidates=[("CATCHUP-42", "OAuth")],
+    )
+    parent_block = next(b for b in view["blocks"] if b.get("block_id") == BID_PARENT_ISSUE)
+    assert parent_block["element"]["initial_option"]["value"] == "CATCHUP-42"
 
 
 def test_parse_handles_empty_state():
