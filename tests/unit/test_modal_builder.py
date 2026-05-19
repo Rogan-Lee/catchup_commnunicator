@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+import json
+import uuid
+
+from app.db.models import StandupEntry, WorkItem
+from app.services.atlassian.types import Team
+from app.services.slack.modal_builder import (
+    BID_PARENT_ISSUE,
+    BID_PROJECT,
+    BID_TASK_CONTENT,
+    BID_TASK_TYPE,
+    BID_TEAM,
+    build_work_item_modal,
+    parse_modal_values,
+    unpack_metadata,
+)
+
+
+def _wi(**slots):
+    entry = StandupEntry(
+        channel_id="C1",
+        slack_message_ts="1700000000.000100",
+        author_slack_id="U1",
+        raw_text="...",
+        posted_at=None,  # type: ignore[arg-type]
+    )
+    entry.id = uuid.uuid4()
+    wi = WorkItem(
+        standup_entry_id=entry.id,
+        sequence_no=1,
+        extracted_slots=slots,
+    )
+    wi.id = uuid.uuid4()
+    wi.standup_entry = entry
+    wi.task_content = slots.get("task_content")
+    wi.task_type = slots.get("task_type")
+    wi.jira_team_id = slots.get("team_id")
+    wi.jira_project_key = slots.get("project_key")
+    wi.parent_feature = slots.get("parent_feature")
+    wi.parent_issue_key = slots.get("parent_issue_key")
+    return wi
+
+
+def test_modal_has_all_blocks_and_metadata():
+    wi = _wi(task_content="OAuth", task_type="Feature", parent_feature="로그인")
+    teams = [Team(id="t1", name="Backend"), Team(id="t2", name="Frontend")]
+
+    view = build_work_item_modal(wi, teams=teams, project_keys=["CATCHUP", "FRONT"])
+
+    assert view["callback_id"] == "work_item_submit"
+    meta = json.loads(view["private_metadata"])
+    assert meta["work_item_id"] == str(wi.id)
+    assert meta["channel_id"] == "C1"
+    assert meta["thread_ts"] == "1700000000.000100"
+
+    block_ids = {b.get("block_id") for b in view["blocks"]}
+    for bid in (BID_TEAM, BID_PROJECT, BID_TASK_TYPE, BID_TASK_CONTENT, BID_PARENT_ISSUE):
+        assert bid in block_ids
+
+
+def test_modal_prefills_initial_values():
+    wi = _wi(
+        task_content="OAuth", task_type="Feature", team_id="t1", parent_feature="로그인"
+    )
+    teams = [Team(id="t1", name="Backend")]
+    view = build_work_item_modal(wi, teams=teams, project_keys=["CATCHUP"])
+
+    by_block = {b["block_id"]: b for b in view["blocks"] if "block_id" in b}
+    assert by_block[BID_TEAM]["element"]["initial_option"]["value"] == "t1"
+    assert by_block[BID_TASK_TYPE]["element"]["initial_option"]["value"] == "Feature"
+    assert by_block[BID_TASK_CONTENT]["element"]["initial_value"] == "OAuth"
+
+
+def test_modal_omits_initial_when_no_match():
+    wi = _wi(task_content="X", task_type="Feature", team_id="unknown")
+    view = build_work_item_modal(
+        wi, teams=[Team(id="t1", name="Backend")], project_keys=["CATCHUP"]
+    )
+    by_block = {b["block_id"]: b for b in view["blocks"] if "block_id" in b}
+    assert "initial_option" not in by_block[BID_TEAM]["element"]
+
+
+def test_parse_modal_values_reads_state():
+    view = {
+        "state": {
+            "values": {
+                BID_TEAM: {"team_select": {"selected_option": {"value": "t1"}}},
+                BID_PROJECT: {"project_select": {"selected_option": {"value": "CATCHUP"}}},
+                BID_TASK_TYPE: {"task_type_select": {"selected_option": {"value": "Bug"}}},
+                "parent_feature_block": {"parent_feature_input": {"value": "로그인"}},
+                BID_TASK_CONTENT: {"task_content_input": {"value": " OAuth "}},
+                BID_PARENT_ISSUE: {"parent_issue_input": {"value": "CATCHUP-42"}},
+            }
+        }
+    }
+    out = parse_modal_values(view)
+    assert out == {
+        "team_id": "t1",
+        "project_key": "CATCHUP",
+        "task_type": "Bug",
+        "parent_feature": "로그인",
+        "task_content": "OAuth",
+        "parent_issue_key": "CATCHUP-42",
+    }
+
+
+def test_parse_handles_empty_state():
+    out = parse_modal_values({"state": {"values": {}}})
+    assert all(v is None for v in out.values())
+
+
+def test_unpack_metadata_invalid_json():
+    assert unpack_metadata({"private_metadata": "{not json"}) == {}

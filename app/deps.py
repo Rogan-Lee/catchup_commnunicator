@@ -4,7 +4,9 @@ from functools import lru_cache
 
 from app.config import Settings, get_settings
 from app.handlers.extract import ExtractHandler
+from app.handlers.publish import PublishHandler
 from app.services.atlassian.http import build_jira_client, build_teams_client
+from app.services.atlassian.jira_issues import JiraIssueService
 from app.services.atlassian.jira_search import JiraSearchService
 from app.services.atlassian.teams import AtlassianTeamsService
 from app.services.cache import CacheLayer, build_redis_client
@@ -38,6 +40,9 @@ class Container:
         self.search_svc = JiraSearchService(
             self.jira_http, team_field_id=settings.atlassian_team_field_id
         )
+        self.issue_svc = JiraIssueService(
+            self.jira_http, team_field_id=settings.atlassian_team_field_id or None
+        )
 
         self.slack = SlackClient(settings.slack_bot_token)
         self.extractor: LLMExtractor = _build_extractor(settings)
@@ -48,7 +53,12 @@ class Container:
             extractor=self.extractor,
             slack=self.slack,
             team_to_project_map=settings.team_to_project_map,
-            publish_enabled=settings.enable_auto_publish,
+            publish_enabled=True,
+        )
+        self.publish_handler = PublishHandler(
+            jira_svc=self.issue_svc,
+            search_svc=self.search_svc,
+            slack=self.slack,
         )
 
     async def close(self) -> None:
