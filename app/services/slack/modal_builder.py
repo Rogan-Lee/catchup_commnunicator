@@ -8,6 +8,7 @@ from app.services.atlassian.types import Team
 from app.services.llm.schemas import TaskType
 
 CALLBACK_ID = "work_item_submit"
+BATCH_CALLBACK_ID = "work_item_batch_submit"
 
 # Block IDs (used by the submit handler to read values back).
 BID_TEAM = "team_block"
@@ -177,6 +178,127 @@ def parse_modal_values(view: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_batch_modal(
+    work_items: list[WorkItem],
+    *,
+    project_keys: list[str],
+    issue_types: list[str] | None = None,
+    task_types: list[str] | None = None,
+) -> dict[str, Any]:
+    """One modal to review/edit every pending work item before publishing.
+
+    A shared project selector at the top, then per-item content / 상위기능 /
+    작업구분 / 티켓유형. Parent ticket and team keep their resolved values.
+    private_metadata carries the ordered work_item ids so the submit handler
+    maps fields back by index.
+    """
+    task_type_options = task_types or [t.value for t in TaskType]
+    initial_project = next(
+        (w.jira_project_key for w in work_items if w.jira_project_key),
+        _first(project_keys),
+    )
+
+    blocks: list[dict[str, Any]] = []
+    if project_keys:
+        blocks.append(
+            _static_select_input(
+                block_id=BID_PROJECT,
+                action_id=AID_PROJECT,
+                label="Jira 프로젝트 (전체 공통)",
+                options=[(k, k) for k in project_keys],
+                initial_value=initial_project,
+            )
+        )
+        blocks.append({"type": "divider"})
+
+    for idx, wi in enumerate(work_items, start=1):
+        slots = wi.extracted_slots or {}
+        content = wi.task_content or slots.get("task_content") or ""
+        blocks.append(
+            {"type": "section", "text": {"type": "mrkdwn", "text": f"*작업 {idx}*"}}
+        )
+        blocks.append(
+            _text_input(
+                block_id=f"b_tc_{idx}",
+                action_id="e_tc",
+                label="작업 내용",
+                initial_value=content,
+                multiline=True,
+            )
+        )
+        blocks.append(
+            _text_input(
+                block_id=f"b_pf_{idx}",
+                action_id="e_pf",
+                label="상위 기능",
+                initial_value=wi.parent_feature or slots.get("parent_feature") or "",
+                optional=True,
+                hint="요약에 [상위기능] 형태로 자동 표시됩니다. 대괄호 없이 입력하세요.",
+            )
+        )
+        blocks.append(
+            _static_select_input(
+                block_id=f"b_tt_{idx}",
+                action_id="e_tt",
+                label="작업 구분",
+                options=[(t, t) for t in task_type_options],
+                initial_value=wi.task_type or slots.get("task_type"),
+                optional=True,
+            )
+        )
+        if issue_types:
+            blocks.append(
+                _static_select_input(
+                    block_id=f"b_it_{idx}",
+                    action_id="e_it",
+                    label="티켓 유형",
+                    options=[(t, t) for t in issue_types],
+                    initial_value=None,
+                    optional=True,
+                )
+            )
+        blocks.append({"type": "divider"})
+
+    return {
+        "type": "modal",
+        "callback_id": BATCH_CALLBACK_ID,
+        "private_metadata": json.dumps({"item_ids": [str(w.id) for w in work_items]}),
+        "title": {"type": "plain_text", "text": "전체 등록"},
+        "submit": {"type": "plain_text", "text": "전체 등록"},
+        "close": {"type": "plain_text", "text": "취소"},
+        "blocks": blocks,
+    }
+
+
+def parse_batch_values(view: dict[str, Any]) -> list[dict[str, Any]]:
+    """Map batch-modal state back to per-item slot dicts (in modal order)."""
+    values = view.get("state", {}).get("values", {})
+    meta = unpack_metadata(view)
+    item_ids = meta.get("item_ids") or []
+
+    def selected(block_id: str, action_id: str) -> str | None:
+        option = (values.get(block_id, {}).get(action_id) or {}).get("selected_option")
+        return option.get("value") if option else None
+
+    def text(block_id: str, action_id: str) -> str | None:
+        return ((values.get(block_id, {}).get(action_id) or {}).get("value") or "").strip() or None
+
+    project_key = selected(BID_PROJECT, AID_PROJECT)
+    out = []
+    for idx, wid in enumerate(item_ids, start=1):
+        out.append(
+            {
+                "work_item_id": wid,
+                "task_content": text(f"b_tc_{idx}", "e_tc"),
+                "parent_feature": text(f"b_pf_{idx}", "e_pf"),
+                "task_type": selected(f"b_tt_{idx}", "e_tt"),
+                "issue_type": selected(f"b_it_{idx}", "e_it"),
+                "project_key": project_key,
+            }
+        )
+    return out
+
+
 def candidate_options(candidates: list[tuple[str, str]]) -> list[dict[str, Any]]:
     """Convert (key, summary) tuples to Slack option dicts for external_select."""
     return [
@@ -262,6 +384,7 @@ def _static_select_input(
     label: str,
     options: list[tuple[str, str]],
     initial_value: str | None,
+    optional: bool = False,
 ) -> dict[str, Any]:
     opt_list = [
         {"text": {"type": "plain_text", "text": name}, "value": val}
@@ -277,12 +400,15 @@ def _static_select_input(
     ) if initial_value else None
     if initial:
         element["initial_option"] = initial
-    return {
+    block: dict[str, Any] = {
         "type": "input",
         "block_id": block_id,
         "label": {"type": "plain_text", "text": label},
         "element": element,
     }
+    if optional:
+        block["optional"] = True
+    return block
 
 
 def _text_input(

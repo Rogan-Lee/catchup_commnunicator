@@ -99,11 +99,13 @@ async def _handle_block_actions(payload: dict, bg: BackgroundTasks) -> Any:
         return JSONResponse({})
 
     if action_id == "publish_all_work_items":
+        if not trigger_id:
+            raise HTTPException(status_code=400, detail="missing trigger_id")
         try:
             entry_id = uuid.UUID(action.get("value", ""))
         except ValueError:
             return JSONResponse({})
-        bg.add_task(_publish_all_task, entry_id=entry_id)
+        bg.add_task(_open_batch_modal_task, entry_id=entry_id, trigger_id=trigger_id)
         return JSONResponse({})
 
     if action_id in ("jira_status_progress", "jira_status_done"):
@@ -113,14 +115,14 @@ async def _handle_block_actions(payload: dict, bg: BackgroundTasks) -> Any:
         if not (issue_key and channel and message_ts):
             return JSONResponse({})
         target = "done" if action_id == "jira_status_done" else "indeterminate"
-        bg.add_task(
-            _transition_task,
+        return await _start_transition(
             issue_key=issue_key,
             target_category=target,
             channel=channel,
             message_ts=message_ts,
+            trigger_id=trigger_id,
+            bg=bg,
         )
-        return JSONResponse({})
 
     log.info("slack.action.unhandled", action_id=action_id)
     return JSONResponse({})
@@ -128,7 +130,13 @@ async def _handle_block_actions(payload: dict, bg: BackgroundTasks) -> Any:
 
 async def _handle_view_submission(payload: dict, bg: BackgroundTasks) -> Any:
     view = payload.get("view") or {}
-    if view.get("callback_id") != "work_item_submit":
+    callback = view.get("callback_id")
+
+    if callback == "work_item_batch_submit":
+        return await _handle_batch_submission(view, bg)
+    if callback == "jira_transition_select":
+        return await _handle_transition_submission(view, bg)
+    if callback != "work_item_submit":
         return JSONResponse({})
 
     slots = parse_modal_values(view)
@@ -156,6 +164,40 @@ async def _handle_view_submission(payload: dict, bg: BackgroundTasks) -> Any:
 
     bg.add_task(_publish_task, work_item_id=work_item_id, slots=slots)
     # Close the modal immediately; result is posted to the thread.
+    return JSONResponse({"response_action": "clear"})
+
+
+async def _handle_batch_submission(view: dict, bg: BackgroundTasks) -> Any:
+    from app.services.slack.modal_builder import BID_PROJECT, parse_batch_values
+
+    rows = parse_batch_values(view)
+    valid = [r for r in rows if r.get("task_content")]
+    if not valid:
+        return JSONResponse(
+            {"response_action": "errors", "errors": {BID_PROJECT: "등록할 작업이 없습니다."}}
+        )
+    bg.add_task(_publish_batch_task, rows=valid)
+    return JSONResponse({"response_action": "clear"})
+
+
+async def _handle_transition_submission(view: dict, bg: BackgroundTasks) -> Any:
+    from app.services.slack.status_card import AID_TRANSITION, BID_TRANSITION
+
+    meta = unpack_metadata(view)
+    values = view.get("state", {}).get("values", {})
+    option = (values.get(BID_TRANSITION, {}).get(AID_TRANSITION) or {}).get(
+        "selected_option"
+    )
+    transition_id = option.get("value") if option else None
+    if not (transition_id and meta.get("issue_key")):
+        return JSONResponse({})
+    bg.add_task(
+        _apply_transition_task,
+        issue_key=meta["issue_key"],
+        transition_id=transition_id,
+        channel=meta.get("channel"),
+        message_ts=meta.get("message_ts"),
+    )
     return JSONResponse({"response_action": "clear"})
 
 
@@ -249,10 +291,21 @@ async def _issue_types_for(container, project_key: str) -> list[str]:
     return types
 
 
-async def _transition_task(
-    *, issue_key: str, target_category: str, channel: str, message_ts: str
-) -> None:
-    from app.services.slack.status_card import build_status_message, pick_transition
+async def _start_transition(
+    *,
+    issue_key: str,
+    target_category: str,
+    channel: str,
+    message_ts: str,
+    trigger_id: str | None,
+    bg: BackgroundTasks,
+) -> Any:
+    """Decide 진행/완료: execute directly when unambiguous, else open a picker.
+
+    The transitions GET runs synchronously so we can branch before the
+    trigger_id (needed for the modal) expires.
+    """
+    from app.services.slack.status_card import build_transition_modal
 
     container = get_container()
     settings = container.settings
@@ -266,33 +319,88 @@ async def _transition_task(
         transitions = await container.issue_svc.get_transitions(issue_key)
     except Exception as e:
         log.warning("transition.list_failed", issue=issue_key, error=str(e))
-        await _notify(container, channel, message_ts, f"❌ {issue_key} 상태 조회 실패")
-        return
+        bg.add_task(_notify_task, channel=channel, thread_ts=message_ts, text=f"❌ {issue_key} 상태 조회 실패")
+        return JSONResponse({})
 
-    picked = pick_transition(transitions, target_category, names)
-    if not picked:
+    candidates = [t for t in transitions if t.to_category == target_category]
+    if not candidates:
         available = ", ".join(t.to_status for t in transitions) or "없음"
-        await _notify(
-            container,
-            channel,
-            message_ts,
-            f":warning: {issue_key} 현재 상태에서 변경할 수 없습니다. 가능한 전환: {available}",
+        bg.add_task(
+            _notify_task,
+            channel=channel,
+            thread_ts=message_ts,
+            text=f":warning: {issue_key} 현재 상태에서 변경할 수 없습니다. 가능한 전환: {available}",
         )
-        return
+        return JSONResponse({})
 
+    lowered = {n.lower() for n in names}
+    named = [t for t in candidates if t.name.lower() in lowered or t.to_status.lower() in lowered]
+
+    chosen = None
+    if len(named) == 1:
+        chosen = named[0]
+    elif len(candidates) == 1:
+        chosen = candidates[0]
+
+    if chosen is not None:
+        bg.add_task(
+            _apply_transition_task,
+            issue_key=issue_key,
+            transition_id=chosen.id,
+            channel=channel,
+            message_ts=message_ts,
+        )
+        return JSONResponse({})
+
+    # Ambiguous: more than one candidate. Let the user choose.
+    options = named if len(named) > 1 else candidates
+    if not trigger_id:
+        bg.add_task(
+            _apply_transition_task,
+            issue_key=issue_key,
+            transition_id=options[0].id,
+            channel=channel,
+            message_ts=message_ts,
+        )
+        return JSONResponse({})
+
+    view = build_transition_modal(
+        issue_key=issue_key, channel=channel, message_ts=message_ts, candidates=options
+    )
     try:
-        await container.issue_svc.transition_issue(issue_key, picked.id)
+        await container.slack.web.views_open(trigger_id=trigger_id, view=view)
     except Exception as e:
-        log.warning("transition.failed", issue=issue_key, error=str(e))
-        await _notify(container, channel, message_ts, f"❌ {issue_key} 상태 변경 실패: {str(e)[:150]}")
+        log.warning("transition.modal_open_failed", issue=issue_key, error=str(e))
+    return JSONResponse({})
+
+
+async def _apply_transition_task(
+    *, issue_key: str, transition_id: str, channel: str | None, message_ts: str | None
+) -> None:
+    from app.services.slack.status_card import build_status_message
+
+    container = get_container()
+    try:
+        transitions = await container.issue_svc.get_transitions(issue_key)
+        chosen = next((t for t in transitions if t.id == transition_id), None)
+        await container.issue_svc.transition_issue(issue_key, transition_id)
+    except Exception as e:
+        log.warning("transition.apply_failed", issue=issue_key, error=str(e))
+        if channel and message_ts:
+            await _notify_task(
+                channel=channel, thread_ts=message_ts,
+                text=f"❌ {issue_key} 상태 변경 실패: {str(e)[:150]}",
+            )
         return
 
-    base = str(settings.atlassian_base_url).rstrip("/")
+    if not (channel and message_ts):
+        return
+    base = str(container.settings.atlassian_base_url).rstrip("/")
     text, blocks = build_status_message(
         issue_key=issue_key,
         issue_url=f"{base}/browse/{issue_key}",
-        status_name=picked.to_status,
-        category=picked.to_category,
+        status_name=chosen.to_status if chosen else "변경됨",
+        category=chosen.to_category if chosen else "",
     )
     try:
         await container.slack.web.chat_update(
@@ -302,14 +410,75 @@ async def _transition_task(
         log.warning("transition.update_failed", issue=issue_key, error=str(e))
 
 
-async def _notify(container, channel: str, thread_ts: str, text: str) -> None:
+async def _notify_task(*, channel: str, thread_ts: str, text: str) -> None:
+    container = get_container()
     try:
         await container.slack.post_message(channel=channel, thread_ts=thread_ts, text=text)
     except Exception as e:
         log.warning("transition.notify_failed", error=str(e))
 
 
-async def _publish_all_task(*, entry_id: uuid.UUID) -> None:
+async def _open_batch_modal_task(*, entry_id: uuid.UUID, trigger_id: str) -> None:
+    from app.services.slack.modal_builder import build_batch_modal
+
+    container = get_container()
+    try:
+        resp = await container.slack.web.views_open(
+            trigger_id=trigger_id, view=_loading_modal()
+        )
+        view_id = resp["view"]["id"]
+    except Exception as e:
+        log.exception("batch_modal.open_failed", error=str(e))
+        return
+
+    try:
+        async with session_scope() as session:
+            pending = (
+                await session.scalars(
+                    select(WorkItem)
+                    .where(
+                        WorkItem.standup_entry_id == entry_id,
+                        WorkItem.status == "pending",
+                    )
+                    .order_by(WorkItem.sequence_no)
+                )
+            ).all()
+            if not pending:
+                await container.slack.web.views_update(
+                    view_id=view_id, view=_info_modal("등록할 작업이 없습니다.")
+                )
+                return
+            project_keys = sorted(set(container.settings.team_to_project_map.values()))
+            initial_project = next(
+                (w.jira_project_key for w in pending if w.jira_project_key),
+                project_keys[0] if project_keys else None,
+            )
+            issue_types = (
+                await _issue_types_for(container, initial_project)
+                if initial_project
+                else []
+            )
+            view = build_batch_modal(
+                list(pending),
+                project_keys=project_keys,
+                issue_types=issue_types,
+                task_types=container.settings.task_type_list,
+            )
+        await container.slack.web.views_update(view_id=view_id, view=view)
+    except Exception as e:
+        log.exception("batch_modal.update_failed", error=str(e))
+
+
+def _info_modal(message: str) -> dict:
+    return {
+        "type": "modal",
+        "title": {"type": "plain_text", "text": "전체 등록"},
+        "close": {"type": "plain_text", "text": "닫기"},
+        "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": message}}],
+    }
+
+
+async def _publish_batch_task(*, rows: list[dict]) -> None:
     container = get_container()
     if not container.publish_handler:
         log.error("publish.handler_unavailable")
@@ -318,38 +487,29 @@ async def _publish_all_task(*, entry_id: uuid.UUID) -> None:
     projects = set(container.settings.team_to_project_map.values())
     default_project = next(iter(projects)) if len(projects) == 1 else None
 
-    async with session_scope() as session:
-        pending = (
-            await session.scalars(
-                select(WorkItem).where(
-                    WorkItem.standup_entry_id == entry_id,
-                    WorkItem.status == "pending",
-                )
-            )
-        ).all()
-        item_ids = [wi.id for wi in pending]
-
-    log.info("publish.all.start", entry=str(entry_id), count=len(item_ids))
-    for wi_id in item_ids:
+    log.info("publish.batch.start", count=len(rows))
+    for r in rows:
+        try:
+            wid = uuid.UUID(r["work_item_id"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        slots = {
+            "task_content": r.get("task_content"),
+            "parent_feature": r.get("parent_feature"),
+            "task_type": r.get("task_type"),
+            "issue_type": r.get("issue_type"),
+            "project_key": r.get("project_key") or default_project,
+        }
         try:
             async with session_scope() as session:
-                wi = await session.get(WorkItem, wi_id)
+                wi = await session.get(WorkItem, wid)
                 if not wi or wi.status != "pending":
                     continue
-                slots = {
-                    "task_content": wi.task_content,
-                    "task_type": wi.task_type,
-                    "parent_feature": wi.parent_feature,
-                    "project_key": wi.jira_project_key or default_project,
-                    "team_id": wi.jira_team_id,
-                    "parent_issue_key": wi.parent_issue_key,
-                }
                 await container.publish_handler.publish(
-                    session, work_item_id=wi_id, confirmed_slots=slots
+                    session, work_item_id=wid, confirmed_slots=slots
                 )
         except Exception as e:
-            # Handler already logged + replied; isolate so others continue.
-            log.warning("publish.all.item_failed", work_item=str(wi_id), error=str(e))
+            log.warning("publish.batch.item_failed", work_item=str(wid), error=str(e))
 
 
 async def _discard_task(*, work_item_id: uuid.UUID) -> None:

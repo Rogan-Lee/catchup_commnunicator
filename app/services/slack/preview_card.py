@@ -43,24 +43,16 @@ def build_preview_blocks(
 
 
 def _publish_all_block(entry: StandupEntry, count: int) -> dict[str, Any]:
+    # Opens a batch-edit modal listing all items; review/edit then submit.
     return {
         "type": "actions",
         "elements": [
             {
                 "type": "button",
-                "text": {"type": "plain_text", "text": f"✅ 전체 등록 ({count}건)"},
+                "text": {"type": "plain_text", "text": f"✏️ 전체 검토·등록 ({count}건)"},
                 "style": "primary",
                 "action_id": "publish_all_work_items",
                 "value": str(entry.id),
-                "confirm": {
-                    "title": {"type": "plain_text", "text": "전체 등록"},
-                    "text": {
-                        "type": "plain_text",
-                        "text": f"미등록 작업 {count}건을 한 번에 Jira 티켓으로 생성합니다. 진행할까요?",
-                    },
-                    "confirm": {"type": "plain_text", "text": "전체 등록"},
-                    "deny": {"type": "plain_text", "text": "취소"},
-                },
             }
         ],
     }

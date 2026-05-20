@@ -66,6 +66,53 @@ def build_status_message(
     return fallback, blocks
 
 
+TRANSITION_SELECT_CALLBACK = "jira_transition_select"
+BID_TRANSITION = "transition_block"
+AID_TRANSITION = "transition_select"
+
+
+def build_transition_modal(
+    *,
+    issue_key: str,
+    channel: str,
+    message_ts: str,
+    candidates: list[Transition],
+) -> dict[str, Any]:
+    """Modal to choose among multiple transitions in the same category."""
+    import json
+
+    options = [
+        {
+            "text": {"type": "plain_text", "text": f"{t.name} → {t.to_status}"[:75]},
+            "value": t.id,
+        }
+        for t in candidates
+    ]
+    return {
+        "type": "modal",
+        "callback_id": TRANSITION_SELECT_CALLBACK,
+        "private_metadata": json.dumps(
+            {"issue_key": issue_key, "channel": channel, "message_ts": message_ts}
+        ),
+        "title": {"type": "plain_text", "text": "상태 변경"},
+        "submit": {"type": "plain_text", "text": "변경"},
+        "close": {"type": "plain_text", "text": "취소"},
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": BID_TRANSITION,
+                "label": {"type": "plain_text", "text": f"{issue_key} 전환 선택"},
+                "element": {
+                    "type": "static_select",
+                    "action_id": AID_TRANSITION,
+                    "options": options,
+                    "initial_option": options[0],
+                },
+            }
+        ],
+    }
+
+
 def _button(label: str, action_id: str, value: str, style: str | None = None) -> dict[str, Any]:
     btn: dict[str, Any] = {
         "type": "button",

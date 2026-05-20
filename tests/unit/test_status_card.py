@@ -62,6 +62,25 @@ def test_status_message_in_progress_only_done():
     assert ids == [AID_DONE]
 
 
+def test_build_transition_modal_lists_candidates():
+    from app.services.slack.status_card import build_transition_modal
+
+    cands = [
+        _t("11", "리뷰중", "리뷰중", "indeterminate"),
+        _t("12", "개발중", "개발중", "indeterminate"),
+    ]
+    view = build_transition_modal(
+        issue_key="CAM-1", channel="C1", message_ts="1.2", candidates=cands
+    )
+    assert view["callback_id"] == "jira_transition_select"
+    import json as _json
+
+    meta = _json.loads(view["private_metadata"])
+    assert meta["issue_key"] == "CAM-1"
+    opts = view["blocks"][0]["element"]["options"]
+    assert [o["value"] for o in opts] == ["11", "12"]
+
+
 def test_status_message_done_has_no_buttons():
     _, blocks = build_status_message(
         issue_key="CAM-1", issue_url="http://x/browse/CAM-1",

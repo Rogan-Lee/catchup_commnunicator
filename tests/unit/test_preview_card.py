@@ -65,7 +65,6 @@ def test_publish_all_button_when_enabled_and_multiple_items():
     ]
     assert len(all_btns) == 1
     assert all_btns[0]["value"] == str(entry.id)
-    assert "confirm" in all_btns[0]
 
 
 def test_no_publish_all_button_for_single_item():
