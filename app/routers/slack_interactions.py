@@ -467,14 +467,22 @@ async def _board_transition_task(
         else settings.status_progress_name_list
     )
 
+    failures: list[str] = []
     for key in targets:
         try:
             transitions = await container.issue_svc.get_transitions(key)
             picked = pick_transition(transitions, target_category, names)
-            if picked:
-                await container.issue_svc.transition_issue(key, picked.id)
+            if not picked:
+                avail = (
+                    ", ".join(f"{t.to_status}({t.to_category})" for t in transitions)
+                    or "없음"
+                )
+                failures.append(f"{key}: 대상 상태로 가는 전환이 없음 (가능: {avail})")
+                continue
+            await container.issue_svc.transition_issue(key, picked.id)
         except Exception as e:
             log.warning("board.transition_failed", issue=key, error=str(e))
+            failures.append(f"{key}: 전환 실패 — {str(e)[:150]}")
 
     tickets = []
     for key in all_keys:
@@ -493,6 +501,13 @@ async def _board_transition_task(
         )
     except Exception as e:
         log.warning("board.update_failed", error=str(e))
+
+    if failures:
+        await _notify_task(
+            channel=channel,
+            thread_ts=message_ts,
+            text=":warning: 상태 변경 실패\n" + "\n".join(f"• {f}" for f in failures),
+        )
 
 
 async def _notify_task(*, channel: str, thread_ts: str, text: str) -> None:
