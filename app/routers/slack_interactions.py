@@ -124,6 +124,40 @@ async def _handle_block_actions(payload: dict, bg: BackgroundTasks) -> Any:
             bg=bg,
         )
 
+    from app.services.slack.status_card import (
+        AID_BOARD_BULK_DONE,
+        AID_BOARD_BULK_PROGRESS,
+        AID_BOARD_DONE,
+        AID_BOARD_PROGRESS,
+        BOARD_ACTION_IDS,
+        extract_board_keys,
+    )
+
+    if action_id in BOARD_ACTION_IDS:
+        channel = (payload.get("channel") or {}).get("id")
+        message_ts = (payload.get("message") or {}).get("ts")
+        all_keys = extract_board_keys((payload.get("message") or {}).get("blocks") or [])
+        if not (channel and message_ts and all_keys):
+            return JSONResponse({})
+        if action_id in (AID_BOARD_BULK_PROGRESS, AID_BOARD_BULK_DONE):
+            targets = all_keys
+        else:
+            targets = [(action.get("value") or "").strip()]
+        target = (
+            "done"
+            if action_id in (AID_BOARD_DONE, AID_BOARD_BULK_DONE)
+            else "indeterminate"
+        )
+        bg.add_task(
+            _board_transition_task,
+            channel=channel,
+            message_ts=message_ts,
+            all_keys=all_keys,
+            targets=[t for t in targets if t],
+            target_category=target,
+        )
+        return JSONResponse({})
+
     log.info("slack.action.unhandled", action_id=action_id)
     return JSONResponse({})
 
@@ -410,6 +444,53 @@ async def _apply_transition_task(
         log.warning("transition.update_failed", issue=issue_key, error=str(e))
 
 
+async def _board_transition_task(
+    *,
+    channel: str,
+    message_ts: str,
+    all_keys: list[str],
+    targets: list[str],
+    target_category: str,
+) -> None:
+    """Transition targets (auto-pick by category+name), then rebuild the board."""
+    from app.services.slack.status_card import build_status_board, pick_transition
+
+    container = get_container()
+    settings = container.settings
+    names = (
+        settings.status_done_name_list
+        if target_category == "done"
+        else settings.status_progress_name_list
+    )
+
+    for key in targets:
+        try:
+            transitions = await container.issue_svc.get_transitions(key)
+            picked = pick_transition(transitions, target_category, names)
+            if picked:
+                await container.issue_svc.transition_issue(key, picked.id)
+        except Exception as e:
+            log.warning("board.transition_failed", issue=key, error=str(e))
+
+    tickets = []
+    for key in all_keys:
+        try:
+            name, category = await container.issue_svc.get_status(key)
+        except Exception as e:
+            log.warning("board.status_failed", issue=key, error=str(e))
+            name, category = "?", ""
+        tickets.append({"key": key, "status_name": name, "category": category})
+
+    base = str(settings.atlassian_base_url)
+    fallback, blocks = build_status_board(tickets, base_url=base)
+    try:
+        await container.slack.web.chat_update(
+            channel=channel, ts=message_ts, text=fallback, blocks=blocks
+        )
+    except Exception as e:
+        log.warning("board.update_failed", error=str(e))
+
+
 async def _notify_task(*, channel: str, thread_ts: str, text: str) -> None:
     container = get_container()
     try:
@@ -479,6 +560,8 @@ def _info_modal(message: str) -> dict:
 
 
 async def _publish_batch_task(*, rows: list[dict]) -> None:
+    from app.services.slack.status_card import build_status_board
+
     container = get_container()
     if not container.publish_handler:
         log.error("publish.handler_unavailable")
@@ -487,7 +570,24 @@ async def _publish_batch_task(*, rows: list[dict]) -> None:
     projects = set(container.settings.team_to_project_map.values())
     default_project = next(iter(projects)) if len(projects) == 1 else None
 
+    # Channel/thread for the consolidated board (from the first item's entry).
+    channel = thread_ts = None
+    try:
+        first = uuid.UUID(rows[0]["work_item_id"])
+        async with session_scope() as session:
+            wi0 = await session.scalar(
+                select(WorkItem)
+                .where(WorkItem.id == first)
+                .options(selectinload(WorkItem.standup_entry))
+            )
+            if wi0 and wi0.standup_entry:
+                channel = wi0.standup_entry.channel_id
+                thread_ts = wi0.standup_entry.slack_message_ts
+    except (ValueError, TypeError, KeyError, IndexError):
+        pass
+
     log.info("publish.batch.start", count=len(rows))
+    created = []
     for r in rows:
         try:
             wid = uuid.UUID(r["work_item_id"])
@@ -500,16 +600,32 @@ async def _publish_batch_task(*, rows: list[dict]) -> None:
             "issue_type": r.get("issue_type"),
             "project_key": r.get("project_key") or default_project,
         }
+        if r.get("parent_issue_key"):
+            slots["parent_issue_key"] = r["parent_issue_key"]
         try:
             async with session_scope() as session:
                 wi = await session.get(WorkItem, wid)
                 if not wi or wi.status != "pending":
                     continue
-                await container.publish_handler.publish(
-                    session, work_item_id=wid, confirmed_slots=slots
+                issue = await container.publish_handler.publish(
+                    session, work_item_id=wid, confirmed_slots=slots, notify=False
                 )
+                created.append(issue)
         except Exception as e:
             log.warning("publish.batch.item_failed", work_item=str(wid), error=str(e))
+
+    if created and channel:
+        base = str(container.settings.atlassian_base_url)
+        tickets = [
+            {"key": c.key, "status_name": "할 일", "category": "new"} for c in created
+        ]
+        fallback, blocks = build_status_board(tickets, base_url=base)
+        try:
+            await container.slack.post_message(
+                channel=channel, thread_ts=thread_ts, text=fallback, blocks=blocks
+            )
+        except Exception as e:
+            log.warning("publish.batch.board_failed", error=str(e))
 
 
 async def _discard_task(*, work_item_id: uuid.UUID) -> None:

@@ -62,6 +62,48 @@ def test_status_message_in_progress_only_done():
     assert ids == [AID_DONE]
 
 
+def test_status_board_per_ticket_and_bulk_buttons():
+    from app.services.slack.status_card import (
+        AID_BOARD_BULK_DONE,
+        AID_BOARD_BULK_PROGRESS,
+        AID_BOARD_DONE,
+        AID_BOARD_PROGRESS,
+        build_status_board,
+        extract_board_keys,
+    )
+
+    tickets = [
+        {"key": "CAM-1", "status_name": "할 일", "category": "new"},
+        {"key": "CAM-2", "status_name": "개발중", "category": "indeterminate"},
+        {"key": "CAM-3", "status_name": "완료", "category": "done"},
+    ]
+    _, blocks = build_status_board(tickets, base_url="https://x.atlassian.net")
+
+    # Bulk buttons present
+    bulk_ids = [
+        e["action_id"]
+        for b in blocks
+        if b["type"] == "actions"
+        for e in b["elements"]
+        if e["action_id"].startswith("board_bulk")
+    ]
+    assert AID_BOARD_BULK_PROGRESS in bulk_ids
+    assert AID_BOARD_BULK_DONE in bulk_ids
+
+    # Done ticket has no per-ticket buttons; in-progress has only 완료
+    per_ticket = [
+        [e["action_id"] for e in b["elements"]]
+        for b in blocks
+        if b["type"] == "actions"
+        and not any(e["action_id"].startswith("board_bulk") for e in b["elements"])
+    ]
+    assert [AID_BOARD_PROGRESS, AID_BOARD_DONE] in per_ticket  # CAM-1
+    assert [AID_BOARD_DONE] in per_ticket  # CAM-2
+
+    # Round-trip: keys recoverable from rendered board
+    assert extract_board_keys(blocks) == ["CAM-1", "CAM-2", "CAM-3"]
+
+
 def test_build_transition_modal_lists_candidates():
     from app.services.slack.status_card import build_transition_modal
 

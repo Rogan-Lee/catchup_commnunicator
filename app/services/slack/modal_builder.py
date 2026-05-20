@@ -257,6 +257,7 @@ def build_batch_modal(
                     optional=True,
                 )
             )
+        blocks.append(_batch_parent_block(idx, wi.parent_issue_key))
         blocks.append({"type": "divider"})
 
     return {
@@ -267,6 +268,27 @@ def build_batch_modal(
         "submit": {"type": "plain_text", "text": "전체 등록"},
         "close": {"type": "plain_text", "text": "취소"},
         "blocks": blocks,
+    }
+
+
+def _batch_parent_block(idx: int, initial_key: str | None) -> dict[str, Any]:
+    element: dict[str, Any] = {
+        "type": "external_select",
+        "action_id": AID_PARENT_ISSUE,
+        "min_query_length": 1,
+        "placeholder": {"type": "plain_text", "text": "검색하여 선택..."},
+    }
+    if initial_key and is_issue_key(initial_key):
+        element["initial_option"] = {
+            "text": {"type": "plain_text", "text": initial_key},
+            "value": initial_key,
+        }
+    return {
+        "type": "input",
+        "block_id": f"b_pr_{idx}",
+        "optional": True,
+        "label": {"type": "plain_text", "text": "부모 티켓"},
+        "element": element,
     }
 
 
@@ -293,6 +315,7 @@ def parse_batch_values(view: dict[str, Any]) -> list[dict[str, Any]]:
                 "parent_feature": text(f"b_pf_{idx}", "e_pf"),
                 "task_type": selected(f"b_tt_{idx}", "e_tt"),
                 "issue_type": selected(f"b_it_{idx}", "e_it"),
+                "parent_issue_key": selected(f"b_pr_{idx}", AID_PARENT_ISSUE),
                 "project_key": project_key,
             }
         )

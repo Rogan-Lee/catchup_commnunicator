@@ -66,6 +66,88 @@ def build_status_message(
     return fallback, blocks
 
 
+AID_BOARD_PROGRESS = "board_status_progress"
+AID_BOARD_DONE = "board_status_done"
+AID_BOARD_BULK_PROGRESS = "board_bulk_progress"
+AID_BOARD_BULK_DONE = "board_bulk_done"
+
+BOARD_ACTION_IDS = (
+    AID_BOARD_PROGRESS,
+    AID_BOARD_DONE,
+    AID_BOARD_BULK_PROGRESS,
+    AID_BOARD_BULK_DONE,
+)
+
+
+def build_status_board(
+    tickets: list[dict[str, Any]], *, base_url: str
+) -> tuple[str, list[dict[str, Any]]]:
+    """Consolidated status board for a batch of created tickets.
+
+    tickets: [{key, status_name, category}]. Per-ticket 진행/완료 buttons plus
+    bulk 전체 진행/전체 완료. Rebuilt in place after each change.
+    """
+    import json
+
+    base = base_url.rstrip("/")
+    keys = [t["key"] for t in tickets]
+    bulk_value = json.dumps({"keys": keys})
+
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"📋 발행 완료 ({len(tickets)}건)"},
+        }
+    ]
+    for t in tickets:
+        url = f"{base}/browse/{t['key']}"
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"🎫 <{url}|{t['key']}> · *{t.get('status_name') or '?'}*",
+                },
+            }
+        )
+        category = t.get("category", "")
+        elements: list[dict[str, Any]] = []
+        if category not in (CATEGORY_PROGRESS, CATEGORY_DONE):
+            elements.append(_button("진행", AID_BOARD_PROGRESS, t["key"], style="primary"))
+        if category != CATEGORY_DONE:
+            elements.append(_button("완료", AID_BOARD_DONE, t["key"]))
+        if elements:
+            blocks.append({"type": "actions", "elements": elements})
+
+    blocks.append({"type": "divider"})
+    blocks.append(
+        {
+            "type": "actions",
+            "elements": [
+                _button("⏩ 전체 진행", AID_BOARD_BULK_PROGRESS, bulk_value, style="primary"),
+                _button("✅ 전체 완료", AID_BOARD_BULK_DONE, bulk_value),
+            ],
+        }
+    )
+    return f"발행 완료 {len(tickets)}건", blocks
+
+
+def extract_board_keys(blocks: list[dict[str, Any]]) -> list[str]:
+    """Recover the full key list from a rendered board (bulk button value)."""
+    import json
+
+    for b in blocks:
+        if b.get("type") != "actions":
+            continue
+        for e in b.get("elements", []):
+            if e.get("action_id") in (AID_BOARD_BULK_PROGRESS, AID_BOARD_BULK_DONE):
+                try:
+                    return list(json.loads(e.get("value") or "{}").get("keys") or [])
+                except (json.JSONDecodeError, AttributeError):
+                    return []
+    return []
+
+
 TRANSITION_SELECT_CALLBACK = "jira_transition_select"
 BID_TRANSITION = "transition_block"
 AID_TRANSITION = "transition_select"

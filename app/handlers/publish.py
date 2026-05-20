@@ -45,6 +45,7 @@ class PublishHandler:
         *,
         work_item_id: uuid.UUID,
         confirmed_slots: dict,
+        notify: bool = True,
     ) -> CreatedIssue:
         wi = await session.scalar(
             select(WorkItem)
@@ -120,8 +121,11 @@ class PublishHandler:
                 task_type=wi.task_type,
                 edited=_was_edited(wi),
             )
-            await self._reply(entry, f"✅ <{created.url}|{created.key}> 생성됨\n> {summary}")
-            await self._post_status_controls(entry, created)
+            if notify:
+                await self._reply(
+                    entry, f"✅ <{created.url}|{created.key}> 생성됨\n> {summary}"
+                )
+                await self._post_status_controls(entry, created)
             return created
 
         except Exception as e:

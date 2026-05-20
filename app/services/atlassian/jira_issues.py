@@ -116,6 +116,15 @@ class JiraIssueService:
             url=f"{str(self.http.base_url).rstrip('/')}/browse/{data['key']}",
         )
 
+    async def get_status(self, key: str) -> tuple[str, str]:
+        """Current (status_name, status_category_key) for an issue."""
+        resp = await self.http.get(
+            f"/rest/api/3/issue/{key}", params={"fields": "status"}
+        )
+        resp.raise_for_status()
+        st = (resp.json().get("fields") or {}).get("status") or {}
+        return st.get("name", ""), (st.get("statusCategory") or {}).get("key", "")
+
     async def get_transitions(self, key: str) -> list[Transition]:
         """Transitions available *from the issue's current status*."""
         resp = await self.http.get(f"/rest/api/3/issue/{key}/transitions")
