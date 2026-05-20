@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     # template; the Jira issue type comes from its own dynamic dropdown.
     task_types: str = "기능,버그,개선,리팩토링,기술부채,문서,조사,데브옵스"
 
+    # Extraction
+    # "rule" = deterministic bullet-point parser (free, no API). "gemini" =
+    # Gemini LLM (needs gemini_api_key + quota). Defaults to the free path.
+    extraction_mode: Literal["rule", "gemini"] = "rule"
+
     # Gemini
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash-exp"

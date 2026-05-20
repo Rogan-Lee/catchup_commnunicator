@@ -121,7 +121,16 @@ class ParentTicketResolver:
                 project_key, query, limit=limit
             )
         except Exception:
-            return []
+            results = []
+        # Text search can miss (Korean tokenization, partial words). Fall back
+        # to recent project issues so the picker is never empty.
+        if not results:
+            try:
+                results = await self.search.get_recent_project_issues(
+                    project_key, limit=limit
+                )
+            except Exception:
+                results = []
         return [
             ParentCandidate(key=r.key, summary=r.summary, source="live_search")
             for r in results

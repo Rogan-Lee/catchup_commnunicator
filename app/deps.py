@@ -74,24 +74,20 @@ class Container:
 
 
 def _build_extractor(settings: Settings) -> LLMExtractor:
-    if not settings.enable_llm_extraction or not settings.gemini_api_key:
-        return _NullExtractor()
+    from app.services.llm.rule_based import RuleBasedExtractor
+
+    # Default to the free, deterministic bullet parser. Only use Gemini when
+    # explicitly enabled and configured.
+    if settings.extraction_mode != "gemini" or not settings.enable_llm_extraction:
+        return RuleBasedExtractor()
+    if not settings.gemini_api_key:
+        return RuleBasedExtractor()
     try:
         from google import genai  # type: ignore
     except Exception:
-        return _NullExtractor()
+        return RuleBasedExtractor()
     client = genai.Client(api_key=settings.gemini_api_key)
     return GeminiExtractor(client=client, model=settings.gemini_model)
-
-
-class _NullExtractor(LLMExtractor):
-    """Used when LLM is disabled or unavailable; always raises so the
-    handler falls back to a single task_content slot."""
-
-    async def extract(self, message, context):  # type: ignore[override]
-        from app.core.errors import LLMError
-
-        raise LLMError("LLM extraction disabled")
 
 
 @lru_cache

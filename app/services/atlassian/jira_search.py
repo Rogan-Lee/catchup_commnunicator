@@ -67,6 +67,26 @@ class JiraSearchService:
         )
         return results
 
+    async def get_recent_project_issues(
+        self,
+        project_key: str,
+        limit: int = 10,
+    ) -> list[Issue]:
+        """Recently-updated, open, non-subtask issues in a project.
+
+        Used as a parent-search fallback so the picker shows something useful
+        even when a text query matches nothing (e.g. Korean tokenization).
+        """
+        jql = (
+            f'project = "{_escape(project_key)}" '
+            f"AND issuetype != Sub-task "
+            f"AND statusCategory != Done "
+            f"ORDER BY updated DESC"
+        )
+        return await self._search(
+            jql, limit, fields=["summary", "status", "issuetype"]
+        )
+
     async def get_user_recent_activity(
         self,
         account_id: str,
