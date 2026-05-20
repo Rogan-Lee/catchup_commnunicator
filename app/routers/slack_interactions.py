@@ -140,6 +140,19 @@ async def _handle_view_submission(payload: dict, bg: BackgroundTasks) -> Any:
 
 async def _open_modal_task(*, work_item_id: uuid.UUID, trigger_id: str) -> None:
     container = get_container()
+
+    # trigger_id is only valid for ~3s, and building the real modal needs DB +
+    # Jira round-trips. Open a lightweight loading modal first to consume the
+    # trigger_id, then swap in the full view with views.update (no trigger_id).
+    try:
+        resp = await container.slack.web.views_open(
+            trigger_id=trigger_id, view=_loading_modal()
+        )
+        view_id = resp["view"]["id"]
+    except Exception as e:
+        log.exception("modal.open.failed", error=str(e))
+        return
+
     try:
         async with session_scope() as session:
             wi = await session.scalar(
@@ -171,9 +184,23 @@ async def _open_modal_task(*, work_item_id: uuid.UUID, trigger_id: str) -> None:
                 parent_candidates=candidates,
                 issue_types=issue_types,
             )
-        await container.slack.web.views_open(trigger_id=trigger_id, view=view)
+        await container.slack.web.views_update(view_id=view_id, view=view)
     except Exception as e:
-        log.exception("modal.open.failed", error=str(e))
+        log.exception("modal.update.failed", error=str(e))
+
+
+def _loading_modal() -> dict:
+    return {
+        "type": "modal",
+        "title": {"type": "plain_text", "text": "작업 등록"},
+        "close": {"type": "plain_text", "text": "취소"},
+        "blocks": [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": ":hourglass_flowing_sand: 불러오는 중..."},
+            }
+        ],
+    }
 
 
 async def _issue_types_for(container, project_key: str) -> list[str]:
