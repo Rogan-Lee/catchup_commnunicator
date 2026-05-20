@@ -52,6 +52,48 @@ def test_card_has_header_and_action_per_item():
         assert "무시" in labels
 
 
+def test_publish_all_button_when_enabled_and_multiple_items():
+    entry = _entry()
+    items = [_item(1, task_content="A"), _item(2, task_content="B")]
+    _, blocks = build_preview_blocks(entry, items, publish_enabled=True)
+    all_btns = [
+        e
+        for b in blocks
+        if b["type"] == "actions"
+        for e in b["elements"]
+        if e.get("action_id") == "publish_all_work_items"
+    ]
+    assert len(all_btns) == 1
+    assert all_btns[0]["value"] == str(entry.id)
+    assert "confirm" in all_btns[0]
+
+
+def test_no_publish_all_button_for_single_item():
+    entry = _entry()
+    items = [_item(1, task_content="A")]
+    _, blocks = build_preview_blocks(entry, items, publish_enabled=True)
+    ids = [
+        e.get("action_id")
+        for b in blocks
+        if b["type"] == "actions"
+        for e in b["elements"]
+    ]
+    assert "publish_all_work_items" not in ids
+
+
+def test_no_publish_all_button_when_disabled():
+    entry = _entry()
+    items = [_item(1, task_content="A"), _item(2, task_content="B")]
+    _, blocks = build_preview_blocks(entry, items, publish_enabled=False)
+    ids = [
+        e.get("action_id")
+        for b in blocks
+        if b["type"] == "actions"
+        for e in b["elements"]
+    ]
+    assert "publish_all_work_items" not in ids
+
+
 def test_card_marks_missing_slots():
     entry = _entry()
     items = [_item(1, task_content="something")]

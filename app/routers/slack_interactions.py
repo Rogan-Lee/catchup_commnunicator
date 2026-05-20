@@ -98,6 +98,14 @@ async def _handle_block_actions(payload: dict, bg: BackgroundTasks) -> Any:
         bg.add_task(_discard_task, work_item_id=work_item_id)
         return JSONResponse({})
 
+    if action_id == "publish_all_work_items":
+        try:
+            entry_id = uuid.UUID(action.get("value", ""))
+        except ValueError:
+            return JSONResponse({})
+        bg.add_task(_publish_all_task, entry_id=entry_id)
+        return JSONResponse({})
+
     log.info("slack.action.unhandled", action_id=action_id)
     return JSONResponse({})
 
@@ -223,6 +231,49 @@ async def _issue_types_for(container, project_key: str) -> list[str]:
     except Exception:
         pass
     return types
+
+
+async def _publish_all_task(*, entry_id: uuid.UUID) -> None:
+    container = get_container()
+    if not container.publish_handler:
+        log.error("publish.handler_unavailable")
+        return
+
+    projects = set(container.settings.team_to_project_map.values())
+    default_project = next(iter(projects)) if len(projects) == 1 else None
+
+    async with session_scope() as session:
+        pending = (
+            await session.scalars(
+                select(WorkItem).where(
+                    WorkItem.standup_entry_id == entry_id,
+                    WorkItem.status == "pending",
+                )
+            )
+        ).all()
+        item_ids = [wi.id for wi in pending]
+
+    log.info("publish.all.start", entry=str(entry_id), count=len(item_ids))
+    for wi_id in item_ids:
+        try:
+            async with session_scope() as session:
+                wi = await session.get(WorkItem, wi_id)
+                if not wi or wi.status != "pending":
+                    continue
+                slots = {
+                    "task_content": wi.task_content,
+                    "task_type": wi.task_type,
+                    "parent_feature": wi.parent_feature,
+                    "project_key": wi.jira_project_key or default_project,
+                    "team_id": wi.jira_team_id,
+                    "parent_issue_key": wi.parent_issue_key,
+                }
+                await container.publish_handler.publish(
+                    session, work_item_id=wi_id, confirmed_slots=slots
+                )
+        except Exception as e:
+            # Handler already logged + replied; isolate so others continue.
+            log.warning("publish.all.item_failed", work_item=str(wi_id), error=str(e))
 
 
 async def _discard_task(*, work_item_id: uuid.UUID) -> None:
