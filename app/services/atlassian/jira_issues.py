@@ -25,6 +25,24 @@ class CreatedIssue(BaseModel):
     url: str
 
 
+class Transition(BaseModel):
+    id: str
+    name: str
+    to_status: str
+    to_category: str  # statusCategory key: new | indeterminate | done
+
+    @classmethod
+    def from_api(cls, data: dict[str, Any]) -> Transition:
+        to = data.get("to") or {}
+        category = (to.get("statusCategory") or {}).get("key", "")
+        return cls(
+            id=str(data.get("id", "")),
+            name=data.get("name", ""),
+            to_status=to.get("name", ""),
+            to_category=category,
+        )
+
+
 # Task-type label (used in modal & naming) → Jira issue type name.
 # Override per workspace by editing this map (small, infrequent).
 TASK_TYPE_TO_ISSUE_TYPE: dict[str, str] = {
@@ -97,3 +115,19 @@ class JiraIssueService:
             id=data["id"],
             url=f"{str(self.http.base_url).rstrip('/')}/browse/{data['key']}",
         )
+
+    async def get_transitions(self, key: str) -> list[Transition]:
+        """Transitions available *from the issue's current status*."""
+        resp = await self.http.get(f"/rest/api/3/issue/{key}/transitions")
+        resp.raise_for_status()
+        return [Transition.from_api(t) for t in resp.json().get("transitions", [])]
+
+    async def transition_issue(self, key: str, transition_id: str) -> None:
+        resp = await self.http.post(
+            f"/rest/api/3/issue/{key}/transitions",
+            json={"transition": {"id": transition_id}},
+        )
+        if resp.status_code >= 400:
+            raise JiraError(
+                f"Transition failed: {resp.status_code} {resp.text[:300]}"
+            )

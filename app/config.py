@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # template; the Jira issue type comes from its own dynamic dropdown.
     task_types: str = "기능,버그,개선,리팩토링,기술부채,문서,조사,데브옵스"
 
+    # Status transition disambiguation. When a Jira issue has multiple
+    # transitions into the same status category, prefer transitions/target
+    # statuses whose name appears here. Matched case-insensitively.
+    status_progress_names: str = "진행,진행중,개발중,In Progress,Start Progress"
+    status_done_names: str = "완료,Done,배포 완료,종료,Closed"
+
     # Extraction
     # "rule" = deterministic bullet-point parser (free, no API). "gemini" =
     # Gemini LLM (needs gemini_api_key + quota). Defaults to the free path.
@@ -77,6 +83,14 @@ class Settings(BaseSettings):
     @property
     def task_type_list(self) -> list[str]:
         return [t.strip() for t in self.task_types.split(",") if t.strip()]
+
+    @property
+    def status_progress_name_list(self) -> list[str]:
+        return [s.strip() for s in self.status_progress_names.split(",") if s.strip()]
+
+    @property
+    def status_done_name_list(self) -> list[str]:
+        return [s.strip() for s in self.status_done_names.split(",") if s.strip()]
 
     @property
     def team_to_project_map(self) -> dict[str, str]:

@@ -120,8 +120,18 @@ async def test_publish_success_creates_issue_and_replies(session, work_item):
     assert jira.calls[0].summary == "[로그인] Feature | OAuth 통합"
     assert jira.calls[0].issue_type == "Story"
 
-    assert len(slack.posted) == 1
+    # 1) creation reply, 2) status-control message with transition buttons
+    assert len(slack.posted) == 2
     assert "CATCHUP-1" in slack.posted[0]["text"]
+    status_msg = slack.posted[1]
+    action_ids = [
+        e["action_id"]
+        for b in status_msg.get("blocks", [])
+        if b["type"] == "actions"
+        for e in b["elements"]
+    ]
+    assert "jira_status_progress" in action_ids
+    assert "jira_status_done" in action_ids
 
 
 @pytest.mark.asyncio

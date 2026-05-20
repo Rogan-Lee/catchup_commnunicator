@@ -121,6 +121,7 @@ class PublishHandler:
                 edited=_was_edited(wi),
             )
             await self._reply(entry, f"✅ <{created.url}|{created.key}> 생성됨\n> {summary}")
+            await self._post_status_controls(entry, created)
             return created
 
         except Exception as e:
@@ -141,6 +142,28 @@ class PublishHandler:
             )
         except Exception as e:
             log.warning("publish.reply.failed", error=str(e))
+
+    async def _post_status_controls(
+        self, entry: StandupEntry, created: CreatedIssue
+    ) -> None:
+        """A separate message with 진행/완료 transition buttons."""
+        from app.services.slack.status_card import build_status_message
+
+        text, blocks = build_status_message(
+            issue_key=created.key,
+            issue_url=created.url,
+            status_name="할 일",
+            category="new",
+        )
+        try:
+            await self.slack.post_message(
+                channel=entry.channel_id,
+                thread_ts=entry.slack_message_ts,
+                text=text,
+                blocks=blocks,
+            )
+        except Exception as e:
+            log.warning("publish.status_controls.failed", error=str(e))
 
 
 def _apply_slots(wi: WorkItem, slots: dict) -> None:

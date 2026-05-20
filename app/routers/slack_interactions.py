@@ -106,6 +106,22 @@ async def _handle_block_actions(payload: dict, bg: BackgroundTasks) -> Any:
         bg.add_task(_publish_all_task, entry_id=entry_id)
         return JSONResponse({})
 
+    if action_id in ("jira_status_progress", "jira_status_done"):
+        issue_key = (action.get("value") or "").strip()
+        channel = (payload.get("channel") or {}).get("id")
+        message_ts = (payload.get("message") or {}).get("ts")
+        if not (issue_key and channel and message_ts):
+            return JSONResponse({})
+        target = "done" if action_id == "jira_status_done" else "indeterminate"
+        bg.add_task(
+            _transition_task,
+            issue_key=issue_key,
+            target_category=target,
+            channel=channel,
+            message_ts=message_ts,
+        )
+        return JSONResponse({})
+
     log.info("slack.action.unhandled", action_id=action_id)
     return JSONResponse({})
 
@@ -231,6 +247,66 @@ async def _issue_types_for(container, project_key: str) -> list[str]:
     except Exception:
         pass
     return types
+
+
+async def _transition_task(
+    *, issue_key: str, target_category: str, channel: str, message_ts: str
+) -> None:
+    from app.services.slack.status_card import build_status_message, pick_transition
+
+    container = get_container()
+    settings = container.settings
+    names = (
+        settings.status_done_name_list
+        if target_category == "done"
+        else settings.status_progress_name_list
+    )
+
+    try:
+        transitions = await container.issue_svc.get_transitions(issue_key)
+    except Exception as e:
+        log.warning("transition.list_failed", issue=issue_key, error=str(e))
+        await _notify(container, channel, message_ts, f"❌ {issue_key} 상태 조회 실패")
+        return
+
+    picked = pick_transition(transitions, target_category, names)
+    if not picked:
+        available = ", ".join(t.to_status for t in transitions) or "없음"
+        await _notify(
+            container,
+            channel,
+            message_ts,
+            f":warning: {issue_key} 현재 상태에서 변경할 수 없습니다. 가능한 전환: {available}",
+        )
+        return
+
+    try:
+        await container.issue_svc.transition_issue(issue_key, picked.id)
+    except Exception as e:
+        log.warning("transition.failed", issue=issue_key, error=str(e))
+        await _notify(container, channel, message_ts, f"❌ {issue_key} 상태 변경 실패: {str(e)[:150]}")
+        return
+
+    base = str(settings.atlassian_base_url).rstrip("/")
+    text, blocks = build_status_message(
+        issue_key=issue_key,
+        issue_url=f"{base}/browse/{issue_key}",
+        status_name=picked.to_status,
+        category=picked.to_category,
+    )
+    try:
+        await container.slack.web.chat_update(
+            channel=channel, ts=message_ts, text=text, blocks=blocks
+        )
+    except Exception as e:
+        log.warning("transition.update_failed", issue=issue_key, error=str(e))
+
+
+async def _notify(container, channel: str, thread_ts: str, text: str) -> None:
+    try:
+        await container.slack.post_message(channel=channel, thread_ts=thread_ts, text=text)
+    except Exception as e:
+        log.warning("transition.notify_failed", error=str(e))
 
 
 async def _publish_all_task(*, entry_id: uuid.UUID) -> None:
