@@ -81,8 +81,8 @@ def test_ingest_accepts_and_dispatches(client, monkeypatch):
     assert seen[0].blocker == "SDK 응답 지연"
 
 
-def test_ingest_validates_payload(client):
-    # Missing required `text` field
+def test_ingest_rejects_when_neither_items_nor_text(client):
+    # Neither items nor text provided
     r = client.post(
         "/standup/ingest",
         json={
@@ -94,3 +94,31 @@ def test_ingest_validates_payload(client):
         headers={"Authorization": "Bearer ingest-secret"},
     )
     assert r.status_code == 422
+
+
+def test_ingest_accepts_structured_items(client, monkeypatch):
+    seen: list = []
+
+    async def fake_process(payload):
+        seen.append(payload)
+
+    monkeypatch.setattr(ingest_module, "_process", fake_process)
+
+    r = client.post(
+        "/standup/ingest",
+        json={
+            "modal_type": "todo",
+            "slack_user_id": "U1",
+            "channel_id": "C123",
+            "message_ts": "1700000000.000100",
+            "items": [
+                {"task_content": "OAuth 연동", "task_type": "기능", "parent_feature": "로그인"},
+                {"task_content": "결제 버그 수정", "task_type": "버그"},
+            ],
+        },
+        headers={"Authorization": "Bearer ingest-secret"},
+    )
+    assert r.status_code == 200
+    assert len(seen) == 1
+    assert len(seen[0].items) == 2
+    assert seen[0].items[0].parent_feature == "로그인"

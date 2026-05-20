@@ -179,6 +179,64 @@ async def test_handler_is_idempotent(session):
 
 
 @pytest.mark.asyncio
+async def test_handle_structured_creates_items_without_extraction(session):
+    extractor = FakeExtractor(RuntimeError("should not be called"))
+    slack = FakeSlack()
+    handler = ExtractHandler(
+        teams_svc=FakeTeams(None),
+        search_svc=FakeSearch(),
+        extractor=extractor,
+        slack=slack,
+        team_to_project_map={},
+    )
+
+    await handler.handle_structured(
+        session,
+        channel_id="C1",
+        message_ts="5.5",
+        author_slack_id="U1",
+        items=[
+            {"task_content": "OAuth 연동", "task_type": "기능", "parent_feature": "로그인"},
+            {"task_content": "결제 버그", "task_type": "버그", "parent_issue_hint": "CAM-7"},
+        ],
+        posted_at=datetime.now(tz=timezone.utc),
+    )
+
+    # The extractor must not have been invoked.
+    assert extractor.calls == 0
+
+    items = (
+        await session.scalars(select(WorkItem).order_by(WorkItem.sequence_no))
+    ).all()
+    assert len(items) == 2
+    assert items[0].task_content == "OAuth 연동"
+    assert items[0].task_type == "기능"  # free-form Korean preserved
+    assert items[0].parent_feature == "로그인"
+    assert items[1].parent_issue_key == "CAM-7"
+    assert len(slack.posted) == 1  # preview card posted
+
+
+@pytest.mark.asyncio
+async def test_handle_structured_skips_empty_items(session):
+    handler = ExtractHandler(
+        teams_svc=FakeTeams(None),
+        search_svc=FakeSearch(),
+        extractor=FakeExtractor(ExtractionResult(items=[])),
+        slack=FakeSlack(),
+        team_to_project_map={},
+    )
+    await handler.handle_structured(
+        session,
+        channel_id="C1",
+        message_ts="6.6",
+        author_slack_id="U1",
+        items=[{"task_content": ""}, {"task_content": "  "}],
+        posted_at=datetime.now(tz=timezone.utc),
+    )
+    assert (await session.scalar(select(StandupEntry))) is None
+
+
+@pytest.mark.asyncio
 async def test_handler_falls_back_when_llm_fails(session):
     handler = ExtractHandler(
         teams_svc=FakeTeams(None),

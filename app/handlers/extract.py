@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import select
@@ -13,7 +14,7 @@ from app.db.models import StandupEntry, WorkItem
 from app.services.atlassian.jira_search import JiraSearchService
 from app.services.atlassian.parent_resolver import ParentTicketResolver
 from app.services.atlassian.teams import AtlassianTeamsService
-from app.services.atlassian.types import AtlassianUser
+from app.services.atlassian.types import AtlassianUser, Team
 from app.services.llm.base import LLMExtractor
 from app.services.llm.schemas import ExtractedWorkItem, ExtractionContext
 from app.services.slack.client import SlackClient
@@ -28,8 +29,20 @@ def is_issue_key(value: str | None) -> bool:
     return bool(value) and bool(_ISSUE_KEY_RE.match(value or ""))
 
 
+@dataclass
+class _Actor:
+    user: AtlassianUser | None
+    team: Team | None
+    project_key: str | None
+
+
 class ExtractHandler:
-    """Pipeline: Slack message → LLM extraction → DB → preview card."""
+    """Pipeline: Slack message → work items → preview card.
+
+    Two entry points share the per-item + preview logic:
+      - handle_message: free text → extractor → items
+      - handle_structured: pre-structured items from a modal (no extraction)
+    """
 
     def __init__(
         self,
@@ -60,6 +73,97 @@ class ExtractHandler:
         text: str,
         posted_at: datetime,
     ) -> None:
+        entry = await self._begin_entry(
+            session,
+            channel_id=channel_id,
+            message_ts=message_ts,
+            author_slack_id=author_slack_id,
+            raw_text=text,
+            posted_at=posted_at,
+        )
+        if entry is None:
+            return
+
+        try:
+            actor = await self._resolve_actor(author_slack_id)
+            context = await self._build_context(actor)
+            items, error = await self._extract_items(text, context, actor)
+            if error:
+                entry.extraction_error = error
+            await self._finalize(
+                session,
+                entry=entry,
+                channel_id=channel_id,
+                message_ts=message_ts,
+                actor=actor,
+                items=items,
+            )
+        except Exception as e:
+            await self._fail(session, entry, e)
+            raise
+
+    async def handle_structured(
+        self,
+        session: AsyncSession,
+        *,
+        channel_id: str,
+        message_ts: str,
+        author_slack_id: str,
+        items: list[dict],
+        posted_at: datetime,
+    ) -> None:
+        """Items already structured by a modal — skip extraction entirely.
+
+        Each item dict may carry: task_content, task_type, parent_feature,
+        parent_issue_hint.
+        """
+        normalized = [
+            _normalize_item(it)
+            for it in items
+            if (it.get("task_content") or "").strip()
+        ]
+        if not normalized:
+            log.info("structured.no_items", channel=channel_id, ts=message_ts)
+            return
+
+        entry = await self._begin_entry(
+            session,
+            channel_id=channel_id,
+            message_ts=message_ts,
+            author_slack_id=author_slack_id,
+            raw_text=_compose_raw_text(normalized),
+            posted_at=posted_at,
+        )
+        if entry is None:
+            return
+
+        try:
+            actor = await self._resolve_actor(author_slack_id)
+            await self._finalize(
+                session,
+                entry=entry,
+                channel_id=channel_id,
+                message_ts=message_ts,
+                actor=actor,
+                items=normalized,
+            )
+            emit_metric("structured.ok", item_count=len(normalized))
+        except Exception as e:
+            await self._fail(session, entry, e)
+            raise
+
+    # --- shared steps
+
+    async def _begin_entry(
+        self,
+        session: AsyncSession,
+        *,
+        channel_id: str,
+        message_ts: str,
+        author_slack_id: str,
+        raw_text: str,
+        posted_at: datetime,
+    ) -> StandupEntry | None:
         existing = await session.scalar(
             select(StandupEntry).where(
                 StandupEntry.channel_id == channel_id,
@@ -68,148 +172,152 @@ class ExtractHandler:
         )
         if existing:
             log.info("extract.duplicate.skipped", channel=channel_id, ts=message_ts)
-            return
+            return None
 
         entry = StandupEntry(
             channel_id=channel_id,
             slack_message_ts=message_ts,
             author_slack_id=author_slack_id,
-            raw_text=text,
+            raw_text=raw_text,
             posted_at=posted_at,
             extraction_status="extracting",
         )
         session.add(entry)
         await session.flush()
+        return entry
+
+    async def _resolve_actor(self, author_slack_id: str) -> _Actor:
+        user = await self._slack_to_atlassian(author_slack_id)
+        team = None
+        if user:
+            try:
+                team = await self.teams_svc.get_user_primary_team(user.account_id)
+            except Exception as e:
+                log.warning("extract.team.lookup_failed", error=str(e))
+        project_key = self.team_to_project_map.get(team.id) if team else None
+        return _Actor(user=user, team=team, project_key=project_key)
+
+    async def _build_context(self, actor: _Actor) -> ExtractionContext:
+        active_epics: list[tuple[str, str]] = []
+        if actor.team and actor.project_key:
+            try:
+                epics = await self.search_svc.get_active_epics_for_team(
+                    actor.project_key, actor.team.id, limit=10
+                )
+                active_epics = [(e.key, e.summary) for e in epics]
+            except Exception as e:
+                log.warning("extract.epics.lookup_failed", error=str(e))
 
         try:
-            atlassian_user = await self._slack_to_atlassian(author_slack_id)
-            team = None
-            if atlassian_user:
-                try:
-                    team = await self.teams_svc.get_user_primary_team(
-                        atlassian_user.account_id
-                    )
-                except Exception as e:
-                    log.warning("extract.team.lookup_failed", error=str(e))
-
-            project_key = (
-                self.team_to_project_map.get(team.id) if team else None
-            )
-
-            active_epics: list[tuple[str, str]] = []
-            if team and project_key:
-                try:
-                    epics = await self.search_svc.get_active_epics_for_team(
-                        project_key, team.id, limit=10
-                    )
-                    active_epics = [(e.key, e.summary) for e in epics]
-                except Exception as e:
-                    log.warning("extract.epics.lookup_failed", error=str(e))
-
-            try:
-                all_teams = await self.teams_svc.list_teams()
-            except Exception as e:
-                log.warning("extract.teams.list_failed", error=str(e))
-                all_teams = []
-
-            context = ExtractionContext(
-                user_primary_team_id=team.id if team else None,
-                user_primary_team_name=team.name if team else None,
-                available_teams=[(t.id, t.name) for t in all_teams],
-                active_epics=active_epics,
-                project_keys=list(set(self.team_to_project_map.values())),
-            )
-
-            extracted_items: list[ExtractedWorkItem]
-            try:
-                result = await self.extractor.extract(text, context)
-                extracted_items = list(result.items) or [
-                    ExtractedWorkItem(task_content=text[:200])
-                ]
-                emit_metric("llm.extract.ok", item_count=len(extracted_items))
-            except Exception as e:
-                # Any extractor failure (LLMError, transport error, SDK bug,
-                # unexpected exception type) degrades to a single-item fallback
-                # so the user still gets a preview card and can publish manually.
-                error_type = type(e).__name__
-                if not isinstance(e, LLMError):
-                    log.exception("extract.llm.unexpected", error_type=error_type)
-                else:
-                    log.warning(
-                        "extract.llm.failed", error=str(e), error_type=error_type
-                    )
-                entry.extraction_error = f"{error_type}: {str(e)[:400]}"
-                extracted_items = [ExtractedWorkItem(task_content=text[:200])]
-                emit_metric("llm.extract.fallback", reason=error_type)
-
-            for idx, ex_item in enumerate(extracted_items, start=1):
-                ex_team_id = ex_item.team_id or (team.id if team else None)
-                ex_project_key = (
-                    self.team_to_project_map.get(ex_team_id)
-                    if ex_team_id
-                    else project_key
-                )
-                hint = ex_item.parent_issue_hint
-                slot_dict = ex_item.model_dump(mode="json")
-
-                candidates = []
-                if ex_project_key:
-                    try:
-                        candidates = await self.parent_resolver.resolve_candidates(
-                            project_key=ex_project_key,
-                            hint=hint,
-                            author_account_id=(
-                                atlassian_user.account_id if atlassian_user else None
-                            ),
-                        )
-                    except Exception as e:
-                        log.warning("extract.parent_resolve.failed", error=str(e))
-                slot_dict["parent_candidates"] = [
-                    {"key": c.key, "summary": c.summary, "source": c.source}
-                    for c in candidates
-                ]
-                resolved_parent = (
-                    hint if is_issue_key(hint) else (candidates[0].key if candidates else None)
-                )
-
-                wi = WorkItem(
-                    standup_entry_id=entry.id,
-                    sequence_no=idx,
-                    extracted_slots=slot_dict,
-                    jira_team_id=ex_team_id,
-                    jira_project_key=ex_project_key,
-                    task_type=ex_item.task_type.value if ex_item.task_type else None,
-                    parent_feature=ex_item.parent_feature,
-                    task_content=ex_item.task_content,
-                    parent_issue_key=resolved_parent,
-                    status="pending",
-                )
-                session.add(wi)
-
-            entry.extraction_status = "completed"
-            await session.flush()
-            await session.refresh(entry, attribute_names=["work_items"])
-            await session.commit()
-
-            fallback, blocks = build_preview_blocks(
-                entry, list(entry.work_items), publish_enabled=self.publish_enabled
-            )
-            try:
-                await self.slack.post_message(
-                    channel=channel_id,
-                    thread_ts=message_ts,
-                    text=fallback,
-                    blocks=blocks,
-                )
-            except Exception as e:
-                log.error("extract.slack.post_failed", error=str(e))
-
+            all_teams = await self.teams_svc.list_teams()
         except Exception as e:
-            log.exception("extract.failed", error=str(e))
+            log.warning("extract.teams.list_failed", error=str(e))
+            all_teams = []
+
+        return ExtractionContext(
+            user_primary_team_id=actor.team.id if actor.team else None,
+            user_primary_team_name=actor.team.name if actor.team else None,
+            available_teams=[(t.id, t.name) for t in all_teams],
+            active_epics=active_epics,
+            project_keys=list(set(self.team_to_project_map.values())),
+        )
+
+    async def _extract_items(
+        self, text: str, context: ExtractionContext, actor: _Actor
+    ) -> tuple[list[dict], str | None]:
+        try:
+            result = await self.extractor.extract(text, context)
+            items = list(result.items) or [ExtractedWorkItem(task_content=text[:200])]
+            emit_metric("llm.extract.ok", item_count=len(items))
+            return [_item_from_extracted(i) for i in items], None
+        except Exception as e:
+            error_type = type(e).__name__
+            if not isinstance(e, LLMError):
+                log.exception("extract.llm.unexpected", error_type=error_type)
+            else:
+                log.warning("extract.llm.failed", error=str(e), error_type=error_type)
+            emit_metric("llm.extract.fallback", reason=error_type)
+            fallback = [_normalize_item({"task_content": text[:200]})]
+            return fallback, f"{error_type}: {str(e)[:400]}"
+
+    async def _finalize(
+        self,
+        session: AsyncSession,
+        *,
+        entry: StandupEntry,
+        channel_id: str,
+        message_ts: str,
+        actor: _Actor,
+        items: list[dict],
+    ) -> None:
+        for idx, item in enumerate(items, start=1):
+            team_id = item.get("team_id") or (actor.team.id if actor.team else None)
+            project_key = (
+                self.team_to_project_map.get(team_id)
+                if team_id
+                else actor.project_key
+            )
+            hint = item.get("parent_issue_hint")
+
+            slot_dict = dict(item)
+            candidates = []
+            if project_key:
+                try:
+                    candidates = await self.parent_resolver.resolve_candidates(
+                        project_key=project_key,
+                        hint=hint,
+                        author_account_id=actor.user.account_id if actor.user else None,
+                    )
+                except Exception as e:
+                    log.warning("extract.parent_resolve.failed", error=str(e))
+            slot_dict["parent_candidates"] = [
+                {"key": c.key, "summary": c.summary, "source": c.source}
+                for c in candidates
+            ]
+            resolved_parent = (
+                hint if is_issue_key(hint) else (candidates[0].key if candidates else None)
+            )
+
+            wi = WorkItem(
+                standup_entry_id=entry.id,
+                sequence_no=idx,
+                extracted_slots=slot_dict,
+                jira_team_id=team_id,
+                jira_project_key=project_key,
+                task_type=item.get("task_type"),
+                parent_feature=item.get("parent_feature"),
+                task_content=item.get("task_content"),
+                parent_issue_key=resolved_parent,
+                status="pending",
+            )
+            session.add(wi)
+
+        entry.extraction_status = "completed"
+        await session.flush()
+        await session.refresh(entry, attribute_names=["work_items"])
+        await session.commit()
+
+        fallback, blocks = build_preview_blocks(
+            entry, list(entry.work_items), publish_enabled=self.publish_enabled
+        )
+        try:
+            await self.slack.post_message(
+                channel=channel_id,
+                thread_ts=message_ts,
+                text=fallback,
+                blocks=blocks,
+            )
+        except Exception as e:
+            log.error("extract.slack.post_failed", error=str(e))
+
+    async def _fail(
+        self, session: AsyncSession, entry: StandupEntry | None, e: Exception
+    ) -> None:
+        log.exception("extract.failed", error=str(e))
+        if entry is not None:
             entry.extraction_status = "failed"
             entry.extraction_error = str(e)[:500]
             await session.commit()
-            raise
 
     async def _slack_to_atlassian(self, slack_user_id: str) -> AtlassianUser | None:
         email = await self.slack.get_user_email(slack_user_id)
@@ -220,3 +328,46 @@ class ExtractHandler:
         except Exception as e:
             log.warning("extract.atlassian.lookup_failed", error=str(e))
             return None
+
+
+def _normalize_item(raw: dict) -> dict:
+    """Coerce a structured/modal item into the slot dict _finalize consumes."""
+    content = (raw.get("task_content") or "").strip()
+    hint = raw.get("parent_issue_hint")
+    if not hint:
+        key = re.search(r"\b[A-Z][A-Z0-9_]+-\d+\b", content)
+        hint = key.group(0) if key else None
+    return {
+        "task_content": content[:200],
+        "task_type": (raw.get("task_type") or None),
+        "parent_feature": (raw.get("parent_feature") or None),
+        "parent_issue_hint": hint,
+        "team_id": raw.get("team_id") or None,
+        "team_name": raw.get("team_name") or None,
+    }
+
+
+def _item_from_extracted(it: ExtractedWorkItem) -> dict:
+    return _normalize_item(
+        {
+            "task_content": it.task_content,
+            "task_type": it.task_type.value if it.task_type else None,
+            "parent_feature": it.parent_feature,
+            "parent_issue_hint": it.parent_issue_hint,
+            "team_id": it.team_id,
+            "team_name": it.team_name,
+        }
+    )
+
+
+def _compose_raw_text(items: list[dict]) -> str:
+    lines = []
+    for it in items:
+        parts = []
+        if it.get("parent_feature"):
+            parts.append(f"[{it['parent_feature']}]")
+        if it.get("task_type"):
+            parts.append(it["task_type"])
+        parts.append(it.get("task_content") or "")
+        lines.append("- " + " ".join(p for p in parts if p))
+    return "\n".join(lines)
