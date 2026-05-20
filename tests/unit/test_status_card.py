@@ -52,6 +52,30 @@ def test_status_message_new_has_both_buttons():
     assert ids == [AID_PROGRESS, AID_DONE]
 
 
+def test_status_message_shows_summary_and_type():
+    _, blocks = build_status_message(
+        issue_key="CAM-1", issue_url="http://x/browse/CAM-1",
+        status_name="할 일", category="new",
+        summary="OAuth 구글 연동", issue_type="Story",
+    )
+    text = blocks[0]["text"]["text"]
+    assert "`Story`" in text
+    assert "OAuth 구글 연동" in text
+
+
+def test_status_board_shows_summary_and_type():
+    from app.services.slack.status_card import build_status_board
+
+    tickets = [
+        {"key": "CAM-1", "status_name": "할 일", "category": "new",
+         "summary": "결제 버그", "issue_type": "Bug"},
+    ]
+    _, blocks = build_status_board(tickets, base_url="https://x.atlassian.net")
+    section = next(b for b in blocks if b["type"] == "section")
+    assert "`Bug`" in section["text"]["text"]
+    assert "결제 버그" in section["text"]["text"]
+
+
 def test_status_message_in_progress_only_done():
     _, blocks = build_status_message(
         issue_key="CAM-1", issue_url="http://x/browse/CAM-1",

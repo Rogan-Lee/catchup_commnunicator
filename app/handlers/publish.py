@@ -158,6 +158,8 @@ class PublishHandler:
             issue_url=created.url,
             status_name="할 일",
             category="new",
+            summary=created.summary,
+            issue_type=created.issue_type,
         )
         try:
             await self.slack.post_message(

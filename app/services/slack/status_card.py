@@ -31,12 +31,21 @@ def pick_transition(
     return in_category[0] if in_category else None
 
 
+def _ticket_line(issue_url: str, issue_key: str, status_name: str, summary: str, issue_type: str) -> str:
+    head = f"🎫 <{issue_url}|{issue_key}> · 상태: *{status_name}*"
+    type_part = f"`{issue_type}` " if issue_type else ""
+    detail = f"{type_part}{summary}".strip()
+    return f"{head}\n{detail}" if detail else head
+
+
 def build_status_message(
     *,
     issue_key: str,
     issue_url: str,
     status_name: str,
     category: str,
+    summary: str = "",
+    issue_type: str = "",
 ) -> tuple[str, list[dict[str, Any]]]:
     """Status line + transition buttons, rebuilt on every state change.
 
@@ -50,7 +59,7 @@ def build_status_message(
         "type": "section",
         "text": {
             "type": "mrkdwn",
-            "text": f"🎫 <{issue_url}|{issue_key}> · 상태: *{status_name}*",
+            "text": _ticket_line(issue_url, issue_key, status_name, summary, issue_type),
         },
     }
     blocks: list[dict[str, Any]] = [section]
@@ -106,7 +115,13 @@ def build_status_board(
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"🎫 <{url}|{t['key']}> · *{t.get('status_name') or '?'}*",
+                    "text": _ticket_line(
+                        url,
+                        t["key"],
+                        t.get("status_name") or "?",
+                        t.get("summary") or "",
+                        t.get("issue_type") or "",
+                    ),
                 },
             }
         )

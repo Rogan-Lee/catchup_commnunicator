@@ -415,8 +415,6 @@ async def _apply_transition_task(
 
     container = get_container()
     try:
-        transitions = await container.issue_svc.get_transitions(issue_key)
-        chosen = next((t for t in transitions if t.id == transition_id), None)
         await container.issue_svc.transition_issue(issue_key, transition_id)
     except Exception as e:
         log.warning("transition.apply_failed", issue=issue_key, error=str(e))
@@ -429,12 +427,18 @@ async def _apply_transition_task(
 
     if not (channel and message_ts):
         return
+    try:
+        brief = await container.issue_svc.get_issue_brief(issue_key)
+    except Exception:
+        brief = {"status_name": "변경됨", "category": "", "summary": "", "issue_type": ""}
     base = str(container.settings.atlassian_base_url).rstrip("/")
     text, blocks = build_status_message(
         issue_key=issue_key,
         issue_url=f"{base}/browse/{issue_key}",
-        status_name=chosen.to_status if chosen else "변경됨",
-        category=chosen.to_category if chosen else "",
+        status_name=brief.get("status_name") or "변경됨",
+        category=brief.get("category") or "",
+        summary=brief.get("summary") or "",
+        issue_type=brief.get("issue_type") or "",
     )
     try:
         await container.slack.web.chat_update(
@@ -475,11 +479,11 @@ async def _board_transition_task(
     tickets = []
     for key in all_keys:
         try:
-            name, category = await container.issue_svc.get_status(key)
+            brief = await container.issue_svc.get_issue_brief(key)
         except Exception as e:
             log.warning("board.status_failed", issue=key, error=str(e))
-            name, category = "?", ""
-        tickets.append({"key": key, "status_name": name, "category": category})
+            brief = {"status_name": "?", "category": "", "summary": "", "issue_type": ""}
+        tickets.append({"key": key, **brief})
 
     base = str(settings.atlassian_base_url)
     fallback, blocks = build_status_board(tickets, base_url=base)
@@ -617,7 +621,14 @@ async def _publish_batch_task(*, rows: list[dict]) -> None:
     if created and channel:
         base = str(container.settings.atlassian_base_url)
         tickets = [
-            {"key": c.key, "status_name": "할 일", "category": "new"} for c in created
+            {
+                "key": c.key,
+                "status_name": "할 일",
+                "category": "new",
+                "summary": c.summary,
+                "issue_type": c.issue_type,
+            }
+            for c in created
         ]
         fallback, blocks = build_status_board(tickets, base_url=base)
         try:

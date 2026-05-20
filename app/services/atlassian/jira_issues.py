@@ -23,6 +23,8 @@ class CreatedIssue(BaseModel):
     key: str
     id: str
     url: str
+    summary: str = ""
+    issue_type: str = ""
 
 
 class Transition(BaseModel):
@@ -114,7 +116,25 @@ class JiraIssueService:
             key=data["key"],
             id=data["id"],
             url=f"{str(self.http.base_url).rstrip('/')}/browse/{data['key']}",
+            summary=payload.summary,
+            issue_type=payload.issue_type,
         )
+
+    async def get_issue_brief(self, key: str) -> dict[str, str]:
+        """summary / issue_type / status_name / category for an issue."""
+        resp = await self.http.get(
+            f"/rest/api/3/issue/{key}",
+            params={"fields": "summary,issuetype,status"},
+        )
+        resp.raise_for_status()
+        f = resp.json().get("fields") or {}
+        st = f.get("status") or {}
+        return {
+            "summary": f.get("summary") or "",
+            "issue_type": (f.get("issuetype") or {}).get("name") or "",
+            "status_name": st.get("name") or "",
+            "category": (st.get("statusCategory") or {}).get("key") or "",
+        }
 
     async def get_status(self, key: str) -> tuple[str, str]:
         """Current (status_name, status_category_key) for an issue."""
