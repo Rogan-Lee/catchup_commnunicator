@@ -50,6 +50,27 @@ class JiraIssueService:
         self.http = http
         self.team_field_id = team_field_id
 
+    async def list_issue_types(self, project_key: str) -> list[str]:
+        """Issue type names creatable in a project (subtasks excluded).
+
+        Uses the createmeta issuetypes endpoint so the modal only ever offers
+        types Jira will actually accept for this project.
+        """
+        resp = await self.http.get(
+            f"/rest/api/3/issue/createmeta/{project_key}/issuetypes"
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        items = data.get("values") or data.get("issueTypes") or []
+        names = [
+            it["name"]
+            for it in items
+            if it.get("name") and not it.get("subtask", False)
+        ]
+        # De-dupe while preserving order.
+        seen: set[str] = set()
+        return [n for n in names if not (n in seen or seen.add(n))]
+
     async def create_issue(self, payload: CreateIssuePayload) -> CreatedIssue:
         fields: dict[str, Any] = {
             "project": {"key": payload.project_key},

@@ -156,6 +156,12 @@ async def _open_modal_task(*, work_item_id: uuid.UUID, trigger_id: str) -> None:
                 log.warning("modal.open.teams_failed", error=str(e))
                 teams = []
             project_keys = sorted(set(container.settings.team_to_project_map.values()))
+            initial_project = wi.jira_project_key or (
+                project_keys[0] if project_keys else None
+            )
+            issue_types: list[str] = []
+            if initial_project:
+                issue_types = await _issue_types_for(container, initial_project)
             stored = (wi.extracted_slots or {}).get("parent_candidates") or []
             candidates = [(c["key"], c.get("summary", "")) for c in stored]
             view = build_work_item_modal(
@@ -163,10 +169,32 @@ async def _open_modal_task(*, work_item_id: uuid.UUID, trigger_id: str) -> None:
                 teams=teams,
                 project_keys=project_keys,
                 parent_candidates=candidates,
+                issue_types=issue_types,
             )
         await container.slack.web.views_open(trigger_id=trigger_id, view=view)
     except Exception as e:
         log.exception("modal.open.failed", error=str(e))
+
+
+async def _issue_types_for(container, project_key: str) -> list[str]:
+    """Issue types for a project, cached for an hour (createmeta is stable)."""
+    cache_key = f"issue_types:{project_key}"
+    try:
+        cached = await container.cache.get(cache_key)
+        if cached is not None:
+            return cached
+    except Exception:
+        cached = None
+    try:
+        types = await container.issue_svc.list_issue_types(project_key)
+    except Exception as e:
+        log.warning("modal.open.issue_types_failed", project=project_key, error=str(e))
+        return []
+    try:
+        await container.cache.set(cache_key, types, ttl=3600)
+    except Exception:
+        pass
+    return types
 
 
 async def _discard_task(*, work_item_id: uuid.UUID) -> None:

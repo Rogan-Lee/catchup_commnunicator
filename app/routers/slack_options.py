@@ -84,21 +84,40 @@ async def slack_options(
 
 
 async def _resolve_project_key(payload: dict) -> str | None:
-    """Use the view's stored work_item to determine the project for search."""
+    """Determine the project to scope parent search by.
+
+    Prefer the project currently selected in the modal (the user may have
+    changed it), then fall back to the stored work item, then the only
+    configured project.
+    """
     view = payload.get("view") or {}
+
+    selected = _selected_project_from_view(view)
+    if selected:
+        return selected
+
     meta = unpack_metadata(view)
     raw_id = meta.get("work_item_id")
-    if not raw_id:
-        return None
-    try:
-        work_item_id = uuid.UUID(raw_id)
-    except ValueError:
-        return None
-    try:
-        async with session_scope() as session:
-            wi = await session.scalar(
-                select(WorkItem).where(WorkItem.id == work_item_id)
-            )
-            return wi.jira_project_key if wi else None
-    except Exception:
-        return None
+    if raw_id:
+        try:
+            work_item_id = uuid.UUID(raw_id)
+            async with session_scope() as session:
+                wi = await session.scalar(
+                    select(WorkItem).where(WorkItem.id == work_item_id)
+                )
+                if wi and wi.jira_project_key:
+                    return wi.jira_project_key
+        except (ValueError, Exception):
+            pass
+
+    projects = set(get_settings().team_to_project_map.values())
+    return next(iter(projects)) if len(projects) == 1 else None
+
+
+def _selected_project_from_view(view: dict) -> str | None:
+    from app.services.slack.modal_builder import AID_PROJECT, BID_PROJECT
+
+    values = view.get("state", {}).get("values", {})
+    block = values.get(BID_PROJECT) or {}
+    option = (block.get(AID_PROJECT) or {}).get("selected_option")
+    return option.get("value") if option else None

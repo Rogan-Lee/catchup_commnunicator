@@ -6,6 +6,7 @@ import uuid
 from app.db.models import StandupEntry, WorkItem
 from app.services.atlassian.types import Team
 from app.services.slack.modal_builder import (
+    BID_ISSUE_TYPE,
     BID_PARENT_ISSUE,
     BID_PROJECT,
     BID_TASK_CONTENT,
@@ -81,6 +82,54 @@ def test_modal_omits_initial_when_no_match():
     assert "initial_option" not in by_block[BID_TEAM]["element"]
 
 
+def test_issue_type_block_present_when_types_supplied():
+    wi = _wi(task_content="X")
+    view = build_work_item_modal(
+        wi,
+        teams=[],
+        project_keys=["CAM"],
+        issue_types=["Story", "Task", "Bug"],
+    )
+    by_block = {b["block_id"]: b for b in view["blocks"] if "block_id" in b}
+    assert BID_ISSUE_TYPE in by_block
+    opts = by_block[BID_ISSUE_TYPE]["element"]["options"]
+    assert [o["value"] for o in opts] == ["Story", "Task", "Bug"]
+
+
+def test_issue_type_block_omitted_when_no_types():
+    wi = _wi(task_content="X")
+    view = build_work_item_modal(wi, teams=[], project_keys=["CAM"])
+    by_block = {b.get("block_id") for b in view["blocks"]}
+    assert BID_ISSUE_TYPE not in by_block
+
+
+def test_task_type_options_are_customizable():
+    wi = _wi(task_content="X")
+    view = build_work_item_modal(
+        wi,
+        teams=[],
+        project_keys=["CAM"],
+        task_types=["기획", "디자인", "개발"],
+    )
+    by_block = {b["block_id"]: b for b in view["blocks"] if "block_id" in b}
+    opts = by_block[BID_TASK_TYPE]["element"]["options"]
+    assert [o["value"] for o in opts] == ["기획", "디자인", "개발"]
+
+
+def test_parse_modal_values_reads_issue_type():
+    view = {
+        "state": {
+            "values": {
+                BID_ISSUE_TYPE: {
+                    "issue_type_select": {"selected_option": {"value": "Story"}}
+                },
+                BID_TASK_CONTENT: {"task_content_input": {"value": "X"}},
+            }
+        }
+    }
+    assert parse_modal_values(view)["issue_type"] == "Story"
+
+
 def test_parse_modal_values_reads_state():
     view = {
         "state": {
@@ -101,6 +150,7 @@ def test_parse_modal_values_reads_state():
         "team_id": "t1",
         "project_key": "CATCHUP",
         "task_type": "Bug",
+        "issue_type": None,
         "parent_feature": "로그인",
         "task_content": "OAuth",
         "parent_issue_key": "CATCHUP-42",

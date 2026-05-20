@@ -13,6 +13,7 @@ CALLBACK_ID = "work_item_submit"
 BID_TEAM = "team_block"
 BID_PROJECT = "project_block"
 BID_TASK_TYPE = "task_type_block"
+BID_ISSUE_TYPE = "issue_type_block"
 BID_PARENT_FEATURE = "parent_feature_block"
 BID_TASK_CONTENT = "task_content_block"
 BID_PARENT_ISSUE = "parent_issue_block"
@@ -20,6 +21,7 @@ BID_PARENT_ISSUE = "parent_issue_block"
 AID_TEAM = "team_select"
 AID_PROJECT = "project_select"
 AID_TASK_TYPE = "task_type_select"
+AID_ISSUE_TYPE = "issue_type_select"
 AID_PARENT_FEATURE = "parent_feature_input"
 AID_TASK_CONTENT = "task_content_input"
 AID_PARENT_ISSUE = "parent_issue_input"
@@ -31,16 +33,24 @@ def build_work_item_modal(
     teams: list[Team],
     project_keys: list[str],
     parent_candidates: list[tuple[str, str]] | None = None,
+    issue_types: list[str] | None = None,
+    task_types: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build a `views.open` payload for the work-item modal.
 
     private_metadata carries work_item_id plus the original Slack channel/ts
     so the submit handler can reply to the thread without another DB roundtrip.
+
+    issue_types: Jira issue type names for this project (fetched live). When
+    empty the issue-type dropdown is omitted and publish falls back to the
+    task-type → issue-type mapping.
+    task_types: labels for the 작업 구분 dropdown; defaults to the TaskType enum.
     """
     slots = work_item.extracted_slots or {}
     initial_team_id = work_item.jira_team_id or slots.get("team_id")
     initial_project = work_item.jira_project_key or _first(project_keys)
     initial_task_type = work_item.task_type or slots.get("task_type")
+    task_type_options = task_types or [t.value for t in TaskType]
     initial_parent_feature = work_item.parent_feature or slots.get("parent_feature") or ""
     initial_task_content = work_item.task_content or slots.get("task_content") or ""
     initial_parent_key = work_item.parent_issue_key or slots.get("parent_issue_hint") or ""
@@ -74,10 +84,24 @@ def build_work_item_modal(
             block_id=BID_TASK_TYPE,
             action_id=AID_TASK_TYPE,
             label="작업 구분",
-            options=[(t.value, t.value) for t in TaskType],
+            options=[(t, t) for t in task_type_options],
             initial_value=initial_task_type,
         )
     )
+
+    if issue_types:
+        initial_issue_type = work_item.confirmed_slots and work_item.confirmed_slots.get(
+            "issue_type"
+        )
+        blocks.append(
+            _static_select_input(
+                block_id=BID_ISSUE_TYPE,
+                action_id=AID_ISSUE_TYPE,
+                label="티켓 유형",
+                options=[(t, t) for t in issue_types],
+                initial_value=initial_issue_type,
+            )
+        )
 
     blocks.append(
         _text_input(
@@ -145,6 +169,7 @@ def parse_modal_values(view: dict[str, Any]) -> dict[str, Any]:
         "team_id": selected(BID_TEAM, AID_TEAM),
         "project_key": selected(BID_PROJECT, AID_PROJECT),
         "task_type": selected(BID_TASK_TYPE, AID_TASK_TYPE),
+        "issue_type": selected(BID_ISSUE_TYPE, AID_ISSUE_TYPE),
         "parent_feature": text(BID_PARENT_FEATURE, AID_PARENT_FEATURE),
         "task_content": text(BID_TASK_CONTENT, AID_TASK_CONTENT),
         "parent_issue_key": selected(BID_PARENT_ISSUE, AID_PARENT_ISSUE),

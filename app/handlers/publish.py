@@ -91,11 +91,16 @@ class PublishHandler:
             except Exception as e:
                 log.warning("publish.assignee.lookup_failed", error=str(e))
 
+            # Prefer the issue type the user picked in the modal; fall back to
+            # the task-type → issue-type mapping when the dropdown was absent.
+            issue_type = confirmed_slots.get("issue_type") or task_type_to_issue_type(
+                wi.task_type
+            )
             payload = CreateIssuePayload(
                 project_key=wi.jira_project_key,
                 summary=summary,
                 description=_build_description(entry, wi),
-                issue_type=task_type_to_issue_type(wi.task_type),
+                issue_type=issue_type,
                 parent_key=wi.parent_issue_key,
                 assignee_account_id=assignee_account_id,
                 team_id=wi.jira_team_id,
