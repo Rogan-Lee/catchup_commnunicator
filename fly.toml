@@ -1,0 +1,24 @@
+# Fly.io config. Rename `app` to your chosen unique name before first deploy
+# (or let `fly launch` set it). Region nrt = Tokyo (low latency to Korea).
+app = "catchup-communicator"
+primary_region = "nrt"
+
+[build]
+
+# Run DB migrations before each release.
+[deploy]
+  release_command = "uv run --no-dev alembic upgrade head"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Keep one machine warm so Slack interactions (3s ACK + trigger_id) never
+  # hit a cold start. Set min_machines_running = 0 to save cost if you accept
+  # occasional first-request latency.
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

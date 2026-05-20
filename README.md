@@ -20,6 +20,38 @@ uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 ```
 
+## Deploy (Fly.io)
+
+A `Dockerfile` and `fly.toml` are included. The release step runs
+`alembic upgrade head`; one machine is kept warm so Slack interactions never
+hit a cold start (`min_machines_running` in `fly.toml`).
+
+```bash
+# one-time
+fly launch --no-deploy        # or `fly apps create <name>` and edit fly.toml `app`
+
+# set secrets (DB/Redis/Slack/Atlassian/ingest token, etc.)
+fly secrets set \
+  DATABASE_URL='postgresql+psycopg://...supabase...?sslmode=require' \
+  REDIS_URL='rediss://...upstash...' \
+  SLACK_BOT_TOKEN='xoxb-...' \
+  SLACK_SIGNING_SECRET='...' \
+  SLACK_STANDUP_CHANNELS='C0...' \
+  ATLASSIAN_BASE_URL='https://<workspace>.atlassian.net' \
+  ATLASSIAN_EMAIL='you@example.com' \
+  ATLASSIAN_API_TOKEN='ATATT...' \
+  ATLASSIAN_TEAM_FIELD_ID='customfield_10001' \
+  TEAM_PROJECT_MAP='{"ari:cloud:identity::team/...":"CAM"}' \
+  STANDUP_INGEST_TOKEN='<same value as the edge function>' \
+  EXTRACTION_MODE='rule'
+
+fly deploy
+```
+
+After deploy, point the Supabase edge function's `STANDUP_INGEST_URL` at the
+Fly URL (e.g. `https://<app>.fly.dev`) and stop the local uvicorn/ngrok.
+Supabase Postgres and Upstash Redis stay as-is — only this app moves to Fly.
+
 ## Atlassian setup
 
 The app authenticates to Jira via HTTP Basic with an API token. Follow these
