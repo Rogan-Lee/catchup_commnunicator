@@ -46,16 +46,26 @@ class JiraSearchService:
         limit: int = 10,
     ) -> list[Issue]:
         safe_query = _escape(query)
+        # Don't restrict by issue type: a "parent" depends on the project's
+        # hierarchy (Epic, Story, Task can all be parents). Only sub-tasks are
+        # never valid parents.
         jql = (
             f'project = "{_escape(project_key)}" '
             f'AND (summary ~ "{safe_query}*" OR text ~ "{safe_query}") '
-            f"AND issuetype in (Epic, Story) "
+            f"AND issuetype != Sub-task "
             f"AND statusCategory != Done "
             f"ORDER BY updated DESC"
         )
-        return await self._search(
+        results = await self._search(
             jql, limit, fields=["summary", "status", "issuetype"]
         )
+        log.info(
+            "jira.parent_search",
+            project=project_key,
+            query=query,
+            results=len(results),
+        )
+        return results
 
     async def get_user_recent_activity(
         self,

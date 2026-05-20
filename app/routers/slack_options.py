@@ -63,6 +63,7 @@ async def slack_options(
         return JSONResponse({"options": []})
 
     project_key = await _resolve_project_key(payload)
+    log.info("slack.options.search", project=project_key, query=query)
 
     container = get_container()
     cache_key = f"parent_search:{project_key or '*'}:{query.lower()}"
