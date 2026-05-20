@@ -85,8 +85,10 @@ class JiraSearchService:
         return Issue.from_api(resp.json())
 
     async def _search(self, jql: str, limit: int, fields: list[str]) -> list[Issue]:
+        # /rest/api/3/search was removed in 2025; /search/jql is the replacement.
+        # Response still exposes `issues`; pagination is token-based (unused here).
         resp = await self.http.get(
-            "/rest/api/3/search",
+            "/rest/api/3/search/jql",
             params={
                 "jql": jql,
                 "maxResults": limit,
