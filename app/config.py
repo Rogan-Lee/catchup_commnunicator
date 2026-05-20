@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     # Team → Project mapping (JSON string in env)
     team_project_map: str = "{}"
 
+    # 작업 구분 labels shown in the modal dropdown (comma-separated).
+    # Free-form — edit to taste, Korean is fine. Used only for the summary
+    # template; the Jira issue type comes from its own dynamic dropdown.
+    task_types: str = "기능,버그,개선,리팩토링,기술부채,문서,조사,데브옵스"
+
     # Gemini
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash-exp"
@@ -63,6 +68,10 @@ class Settings(BaseSettings):
     @property
     def standup_channel_ids(self) -> set[str]:
         return {c.strip() for c in self.slack_standup_channels.split(",") if c.strip()}
+
+    @property
+    def task_type_list(self) -> list[str]:
+        return [t.strip() for t in self.task_types.split(",") if t.strip()]
 
     @property
     def team_to_project_map(self) -> dict[str, str]:

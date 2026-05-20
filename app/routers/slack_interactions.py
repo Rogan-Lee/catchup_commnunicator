@@ -183,6 +183,7 @@ async def _open_modal_task(*, work_item_id: uuid.UUID, trigger_id: str) -> None:
                 project_keys=project_keys,
                 parent_candidates=candidates,
                 issue_types=issue_types,
+                task_types=container.settings.task_type_list,
             )
         await container.slack.web.views_update(view_id=view_id, view=view)
     except Exception as e:
