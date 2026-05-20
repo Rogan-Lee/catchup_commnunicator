@@ -83,3 +83,22 @@ async def test_missing_slots_use_defaults(session):
     engine = NamingRuleEngine(session)
     out = await engine.build_summary("ANY", "Task", {"task_content": "X"})
     assert out == "[기타] Task | X"
+
+
+@pytest.mark.asyncio
+async def test_user_typed_brackets_are_not_doubled(session):
+    engine = NamingRuleEngine(session)
+    out = await engine.build_summary(
+        "ANY", "Feature", {"parent_feature": "[로그인]", "task_content": "OAuth"}
+    )
+    assert out == "[로그인] Feature | OAuth"
+
+
+@pytest.mark.asyncio
+async def test_nested_brackets_collapse_to_one(session):
+    engine = NamingRuleEngine(session)
+    out = await engine.build_summary(
+        "ANY", "Bug", {"parent_feature": "[[결제]]", "task_content": "X"}
+    )
+    assert out == "[결제] Bug | X"
+

@@ -56,7 +56,7 @@ class NamingRuleEngine:
     @staticmethod
     def _render(template: str, slots: dict[str, Any], task_type: str | None) -> str:
         values = _SafeDict(
-            parent_feature=slots.get("parent_feature") or "기타",
+            parent_feature=_normalize_feature(slots.get("parent_feature")),
             task_type=task_type or "Task",
             task_content=slots.get("task_content") or "",
             version=slots.get("version") or "",
@@ -67,6 +67,18 @@ class NamingRuleEngine:
         except (KeyError, IndexError, ValueError):
             rendered = template
         return _collapse_whitespace(rendered)
+
+
+def _normalize_feature(value: str | None) -> str:
+    """Inner text for the parent-feature slot, without surrounding brackets.
+
+    The template wraps it in [...], so we strip any brackets the user typed to
+    avoid [[...]] while still guaranteeing the [내용] format in the summary.
+    """
+    text = (value or "").strip()
+    while text.startswith("[") and text.endswith("]") and len(text) >= 2:
+        text = text[1:-1].strip()
+    return text or "기타"
 
 
 def _collapse_whitespace(s: str) -> str:

@@ -110,6 +110,7 @@ def build_work_item_modal(
             label="상위 기능",
             initial_value=initial_parent_feature,
             optional=True,
+            hint="요약에 [상위기능] 형태로 자동 표시됩니다. 대괄호 없이 입력하세요.",
         )
     )
 
@@ -292,6 +293,7 @@ def _text_input(
     initial_value: str,
     optional: bool = False,
     multiline: bool = False,
+    hint: str | None = None,
 ) -> dict[str, Any]:
     element: dict[str, Any] = {
         "type": "plain_text_input",
@@ -309,4 +311,6 @@ def _text_input(
     }
     if optional:
         block["optional"] = True
+    if hint:
+        block["hint"] = {"type": "plain_text", "text": hint}
     return block
