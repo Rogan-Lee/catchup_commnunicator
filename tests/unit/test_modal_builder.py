@@ -6,6 +6,7 @@ import uuid
 from app.db.models import StandupEntry, WorkItem
 from app.services.atlassian.types import Team
 from app.services.slack.modal_builder import (
+    BID_ASSIGNEE,
     BID_ISSUE_TYPE,
     BID_PARENT_ISSUE,
     BID_PROJECT,
@@ -163,6 +164,29 @@ def test_parse_batch_values_maps_by_index():
     assert rows[1]["task_content"] == "B"
 
 
+def test_modal_has_assignee_defaulting_to_author():
+    wi = _wi(task_content="X")
+    view = build_work_item_modal(wi, teams=[], project_keys=["CAM"])
+    by_block = {b["block_id"]: b for b in view["blocks"] if "block_id" in b}
+    el = by_block[BID_ASSIGNEE]["element"]
+    assert el["type"] == "users_select"
+    assert el["initial_user"] == "U1"  # the standup author
+
+
+def test_parse_modal_values_reads_assignee():
+    from app.services.slack.modal_builder import AID_ASSIGNEE, BID_ASSIGNEE
+
+    view = {
+        "state": {
+            "values": {
+                BID_ASSIGNEE: {AID_ASSIGNEE: {"selected_user": "U999"}},
+                BID_TASK_CONTENT: {"task_content_input": {"value": "X"}},
+            }
+        }
+    }
+    assert parse_modal_values(view)["assignee_slack_id"] == "U999"
+
+
 def test_parse_modal_values_reads_issue_type():
     view = {
         "state": {
@@ -201,6 +225,7 @@ def test_parse_modal_values_reads_state():
         "parent_feature": "로그인",
         "task_content": "OAuth",
         "parent_issue_key": "CATCHUP-42",
+        "assignee_slack_id": None,
     }
 
 

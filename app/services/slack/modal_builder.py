@@ -18,6 +18,7 @@ BID_ISSUE_TYPE = "issue_type_block"
 BID_PARENT_FEATURE = "parent_feature_block"
 BID_TASK_CONTENT = "task_content_block"
 BID_PARENT_ISSUE = "parent_issue_block"
+BID_ASSIGNEE = "assignee_block"
 
 AID_TEAM = "team_select"
 AID_PROJECT = "project_select"
@@ -26,6 +27,26 @@ AID_ISSUE_TYPE = "issue_type_select"
 AID_PARENT_FEATURE = "parent_feature_input"
 AID_TASK_CONTENT = "task_content_input"
 AID_PARENT_ISSUE = "parent_issue_input"
+AID_ASSIGNEE = "assignee_select"
+
+
+def _assignee_block(
+    block_id: str, action_id: str, initial_user: str | None
+) -> dict[str, Any]:
+    element: dict[str, Any] = {
+        "type": "users_select",
+        "action_id": action_id,
+        "placeholder": {"type": "plain_text", "text": "담당자 선택"},
+    }
+    if initial_user:
+        element["initial_user"] = initial_user
+    return {
+        "type": "input",
+        "block_id": block_id,
+        "optional": True,
+        "label": {"type": "plain_text", "text": "담당자"},
+        "element": element,
+    }
 
 
 def build_work_item_modal(
@@ -126,6 +147,14 @@ def build_work_item_modal(
     )
 
     blocks.append(
+        _assignee_block(
+            BID_ASSIGNEE,
+            AID_ASSIGNEE,
+            work_item.standup_entry.author_slack_id if work_item.standup_entry else None,
+        )
+    )
+
+    blocks.append(
         _parent_issue_block(
             candidates=parent_candidates or [],
             initial_key=initial_parent_key if is_issue_key(initial_parent_key) else None,
@@ -167,6 +196,10 @@ def parse_modal_values(view: dict[str, Any]) -> dict[str, Any]:
         block = values.get(block_id) or {}
         return ((block.get(action_id) or {}).get("value") or "").strip() or None
 
+    def user(block_id: str, action_id: str) -> str | None:
+        block = values.get(block_id) or {}
+        return (block.get(action_id) or {}).get("selected_user")
+
     return {
         "team_id": selected(BID_TEAM, AID_TEAM),
         "project_key": selected(BID_PROJECT, AID_PROJECT),
@@ -175,6 +208,7 @@ def parse_modal_values(view: dict[str, Any]) -> dict[str, Any]:
         "parent_feature": text(BID_PARENT_FEATURE, AID_PARENT_FEATURE),
         "task_content": text(BID_TASK_CONTENT, AID_TASK_CONTENT),
         "parent_issue_key": selected(BID_PARENT_ISSUE, AID_PARENT_ISSUE),
+        "assignee_slack_id": user(BID_ASSIGNEE, AID_ASSIGNEE),
     }
 
 
@@ -258,6 +292,13 @@ def build_batch_modal(
                 )
             )
         blocks.append(_batch_parent_block(idx, wi.parent_issue_key))
+        blocks.append(
+            _assignee_block(
+                f"b_as_{idx}",
+                "e_as",
+                wi.standup_entry.author_slack_id if wi.standup_entry else None,
+            )
+        )
         blocks.append({"type": "divider"})
 
     return {
@@ -305,6 +346,9 @@ def parse_batch_values(view: dict[str, Any]) -> list[dict[str, Any]]:
     def text(block_id: str, action_id: str) -> str | None:
         return ((values.get(block_id, {}).get(action_id) or {}).get("value") or "").strip() or None
 
+    def user(block_id: str, action_id: str) -> str | None:
+        return (values.get(block_id, {}).get(action_id) or {}).get("selected_user")
+
     project_key = selected(BID_PROJECT, AID_PROJECT)
     out = []
     for idx, wid in enumerate(item_ids, start=1):
@@ -316,6 +360,7 @@ def parse_batch_values(view: dict[str, Any]) -> list[dict[str, Any]]:
                 "task_type": selected(f"b_tt_{idx}", "e_tt"),
                 "issue_type": selected(f"b_it_{idx}", "e_it"),
                 "parent_issue_key": selected(f"b_pr_{idx}", AID_PARENT_ISSUE),
+                "assignee_slack_id": user(f"b_as_{idx}", "e_as"),
                 "project_key": project_key,
             }
         )

@@ -82,9 +82,13 @@ class PublishHandler:
                 slots=confirmed_slots,
             )
 
+            # Assignee: the user picked in the modal, else the standup author.
             assignee_account_id = None
+            assignee_slack_id = (
+                confirmed_slots.get("assignee_slack_id") or entry.author_slack_id
+            )
             try:
-                email = await self.slack.get_user_email(entry.author_slack_id)
+                email = await self.slack.get_user_email(assignee_slack_id)
                 if email:
                     user = await self.search_svc.lookup_account_by_email(email)
                     if user:

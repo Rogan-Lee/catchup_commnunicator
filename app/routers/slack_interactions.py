@@ -540,6 +540,7 @@ async def _open_batch_modal_task(*, entry_id: uuid.UUID, trigger_id: str) -> Non
                         WorkItem.standup_entry_id == entry_id,
                         WorkItem.status == "pending",
                     )
+                    .options(selectinload(WorkItem.standup_entry))
                     .order_by(WorkItem.sequence_no)
                 )
             ).all()
@@ -621,6 +622,8 @@ async def _publish_batch_task(*, rows: list[dict]) -> None:
         }
         if r.get("parent_issue_key"):
             slots["parent_issue_key"] = r["parent_issue_key"]
+        if r.get("assignee_slack_id"):
+            slots["assignee_slack_id"] = r["assignee_slack_id"]
         try:
             async with session_scope() as session:
                 wi = await session.get(WorkItem, wid)
