@@ -415,7 +415,11 @@ async def _apply_transition_task(
 
     container = get_container()
     try:
+        prev_assignee = (await container.issue_svc.get_issue_brief(issue_key)).get(
+            "assignee_account_id"
+        )
         await container.issue_svc.transition_issue(issue_key, transition_id)
+        await _restore_assignee(container, issue_key, prev_assignee)
     except Exception as e:
         log.warning("transition.apply_failed", issue=issue_key, error=str(e))
         if channel and message_ts:
@@ -470,6 +474,7 @@ async def _board_transition_task(
     failures: list[str] = []
     for key in targets:
         try:
+            brief = await container.issue_svc.get_issue_brief(key)
             transitions = await container.issue_svc.get_transitions(key)
             picked = pick_transition(transitions, target_category, names)
             if not picked:
@@ -480,6 +485,7 @@ async def _board_transition_task(
                 failures.append(f"{key}: 대상 상태로 가는 전환이 없음 (가능: {avail})")
                 continue
             await container.issue_svc.transition_issue(key, picked.id)
+            await _restore_assignee(container, key, brief.get("assignee_account_id"))
         except Exception as e:
             log.warning("board.transition_failed", issue=key, error=str(e))
             failures.append(f"{key}: 전환 실패 — {str(e)[:150]}")
@@ -508,6 +514,23 @@ async def _board_transition_task(
             thread_ts=message_ts,
             text=":warning: 상태 변경 실패\n" + "\n".join(f"• {f}" for f in failures),
         )
+
+
+async def _restore_assignee(container, issue_key: str, prev_account_id: str | None) -> None:
+    """Undo a workflow 'assign to current user' post-function on transition.
+
+    The API token performs the transition, so workflows that auto-assign on
+    transition would hand the issue to the token owner. Re-apply whoever was
+    assigned before the transition.
+    """
+    try:
+        after = (await container.issue_svc.get_issue_brief(issue_key)).get(
+            "assignee_account_id"
+        )
+        if (prev_account_id or "") != (after or ""):
+            await container.issue_svc.assign_issue(issue_key, prev_account_id or None)
+    except Exception as e:
+        log.warning("transition.assignee_restore_failed", issue=issue_key, error=str(e))
 
 
 async def _notify_task(*, channel: str, thread_ts: str, text: str) -> None:

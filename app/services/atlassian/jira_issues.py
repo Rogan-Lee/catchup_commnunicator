@@ -121,20 +121,31 @@ class JiraIssueService:
         )
 
     async def get_issue_brief(self, key: str) -> dict[str, str]:
-        """summary / issue_type / status_name / category for an issue."""
+        """summary / issue_type / status_name / category / assignee for an issue."""
         resp = await self.http.get(
             f"/rest/api/3/issue/{key}",
-            params={"fields": "summary,issuetype,status"},
+            params={"fields": "summary,issuetype,status,assignee"},
         )
         resp.raise_for_status()
         f = resp.json().get("fields") or {}
         st = f.get("status") or {}
+        assignee = f.get("assignee") or {}
         return {
             "summary": f.get("summary") or "",
             "issue_type": (f.get("issuetype") or {}).get("name") or "",
             "status_name": st.get("name") or "",
             "category": (st.get("statusCategory") or {}).get("key") or "",
+            "assignee_account_id": assignee.get("accountId") or "",
         }
+
+    async def assign_issue(self, key: str, account_id: str | None) -> None:
+        """Set (or clear, when account_id is None) the assignee."""
+        resp = await self.http.put(
+            f"/rest/api/3/issue/{key}/assignee",
+            json={"accountId": account_id},
+        )
+        if resp.status_code >= 400:
+            raise JiraError(f"Assign failed: {resp.status_code} {resp.text[:200]}")
 
     async def get_status(self, key: str) -> tuple[str, str]:
         """Current (status_name, status_category_key) for an issue."""
