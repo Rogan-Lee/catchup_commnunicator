@@ -91,6 +91,19 @@ class JiraIssueService:
         seen: set[str] = set()
         return [n for n in names if not (n in seen or seen.add(n))]
 
+    async def get_subtask_type(self, project_key: str) -> str | None:
+        """Name of the project's sub-task issue type (subtask=true), if any."""
+        resp = await self.http.get(
+            f"/rest/api/3/issue/createmeta/{project_key}/issuetypes"
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        items = data.get("values") or data.get("issueTypes") or []
+        for it in items:
+            if it.get("subtask") and it.get("name"):
+                return it["name"]
+        return None
+
     async def create_issue(self, payload: CreateIssuePayload) -> CreatedIssue:
         fields: dict[str, Any] = {
             "project": {"key": payload.project_key},

@@ -43,13 +43,15 @@ def test_pick_returns_none_when_category_absent():
 
 
 def test_status_message_new_has_both_buttons():
+    from app.services.slack.status_card import AID_ADD_SUBTASK
+
     _, blocks = build_status_message(
         issue_key="CAM-1", issue_url="http://x/browse/CAM-1",
         status_name="할 일", category="new",
     )
     actions = [b for b in blocks if b["type"] == "actions"][0]
     ids = [e["action_id"] for e in actions["elements"]]
-    assert ids == [AID_PROGRESS, AID_DONE]
+    assert ids == [AID_PROGRESS, AID_DONE, AID_ADD_SUBTASK]
 
 
 def test_status_message_shows_summary_and_type():
@@ -77,13 +79,15 @@ def test_status_board_shows_summary_and_type():
 
 
 def test_status_message_in_progress_only_done():
+    from app.services.slack.status_card import AID_ADD_SUBTASK
+
     _, blocks = build_status_message(
         issue_key="CAM-1", issue_url="http://x/browse/CAM-1",
         status_name="개발중", category="indeterminate",
     )
     actions = [b for b in blocks if b["type"] == "actions"][0]
     ids = [e["action_id"] for e in actions["elements"]]
-    assert ids == [AID_DONE]
+    assert ids == [AID_DONE, AID_ADD_SUBTASK]
 
 
 def test_status_board_per_ticket_and_bulk_buttons():
@@ -114,15 +118,18 @@ def test_status_board_per_ticket_and_bulk_buttons():
     assert AID_BOARD_BULK_PROGRESS in bulk_ids
     assert AID_BOARD_BULK_DONE in bulk_ids
 
-    # Done ticket has no per-ticket buttons; in-progress has only 완료
+    # Each ticket has a 하위 작업 button; new also has 진행/완료, done only 하위 작업
+    from app.services.slack.status_card import AID_ADD_SUBTASK
+
     per_ticket = [
         [e["action_id"] for e in b["elements"]]
         for b in blocks
         if b["type"] == "actions"
         and not any(e["action_id"].startswith("board_bulk") for e in b["elements"])
     ]
-    assert [AID_BOARD_PROGRESS, AID_BOARD_DONE] in per_ticket  # CAM-1
-    assert [AID_BOARD_DONE] in per_ticket  # CAM-2
+    assert [AID_BOARD_PROGRESS, AID_BOARD_DONE, AID_ADD_SUBTASK] in per_ticket  # CAM-1
+    assert [AID_BOARD_DONE, AID_ADD_SUBTASK] in per_ticket  # CAM-2
+    assert [AID_ADD_SUBTASK] in per_ticket  # CAM-3 (done)
 
     # Round-trip: keys recoverable from rendered board
     assert extract_board_keys(blocks) == ["CAM-1", "CAM-2", "CAM-3"]
@@ -147,9 +154,13 @@ def test_build_transition_modal_lists_candidates():
     assert [o["value"] for o in opts] == ["11", "12"]
 
 
-def test_status_message_done_has_no_buttons():
+def test_status_message_done_has_only_subtask_button():
+    from app.services.slack.status_card import AID_ADD_SUBTASK
+
     _, blocks = build_status_message(
         issue_key="CAM-1", issue_url="http://x/browse/CAM-1",
         status_name="완료", category="done",
     )
-    assert all(b["type"] != "actions" for b in blocks)
+    actions = [b for b in blocks if b["type"] == "actions"][0]
+    ids = [e["action_id"] for e in actions["elements"]]
+    assert ids == [AID_ADD_SUBTASK]

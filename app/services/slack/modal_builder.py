@@ -212,6 +212,67 @@ def parse_modal_values(view: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+SUBTASK_CALLBACK_ID = "subtask_submit"
+BID_SUBTASK_LINES = "subtask_lines_block"
+AID_SUBTASK_LINES = "subtask_lines_input"
+BID_SUBTASK_ASSIGNEE = "subtask_assignee_block"
+AID_SUBTASK_ASSIGNEE = "subtask_assignee_select"
+
+
+def build_subtask_modal(
+    *, parent_key: str, channel: str, thread_ts: str, author_slack_id: str | None
+) -> dict[str, Any]:
+    """Modal to add one or more sub-tasks under an existing issue."""
+    return {
+        "type": "modal",
+        "callback_id": SUBTASK_CALLBACK_ID,
+        "private_metadata": json.dumps(
+            {"parent_key": parent_key, "channel": channel, "thread_ts": thread_ts}
+        ),
+        "title": {"type": "plain_text", "text": "하위 작업 추가"},
+        "submit": {"type": "plain_text", "text": "등록"},
+        "close": {"type": "plain_text", "text": "취소"},
+        "blocks": [
+            {
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f"*{parent_key}* 의 하위 작업"}],
+            },
+            {
+                "type": "input",
+                "block_id": BID_SUBTASK_LINES,
+                "label": {"type": "plain_text", "text": "하위 작업 (줄바꿈으로 여러 개)"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": AID_SUBTASK_LINES,
+                    "multiline": True,
+                    "placeholder": {"type": "plain_text", "text": "한 줄에 하나씩 입력"},
+                },
+            },
+            _assignee_block(BID_SUBTASK_ASSIGNEE, AID_SUBTASK_ASSIGNEE, author_slack_id),
+        ],
+    }
+
+
+def parse_subtask_values(view: dict[str, Any]) -> dict[str, Any]:
+    values = view.get("state", {}).get("values", {})
+    raw = (
+        (values.get(BID_SUBTASK_LINES, {}).get(AID_SUBTASK_LINES) or {}).get("value")
+        or ""
+    )
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    assignee = (
+        values.get(BID_SUBTASK_ASSIGNEE, {}).get(AID_SUBTASK_ASSIGNEE) or {}
+    ).get("selected_user")
+    meta = unpack_metadata(view)
+    return {
+        "parent_key": meta.get("parent_key"),
+        "channel": meta.get("channel"),
+        "thread_ts": meta.get("thread_ts"),
+        "lines": lines,
+        "assignee_slack_id": assignee,
+    }
+
+
 def build_batch_modal(
     work_items: list[WorkItem],
     *,

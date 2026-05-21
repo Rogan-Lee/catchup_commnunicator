@@ -9,6 +9,7 @@ CATEGORY_DONE = "done"
 
 AID_PROGRESS = "jira_status_progress"
 AID_DONE = "jira_status_done"
+AID_ADD_SUBTASK = "add_subtask"
 
 
 def pick_transition(
@@ -69,8 +70,8 @@ def build_status_message(
         elements.append(_button("진행", AID_PROGRESS, issue_key, style="primary"))
     if category != CATEGORY_DONE:
         elements.append(_button("완료", AID_DONE, issue_key))
-    if elements:
-        blocks.append({"type": "actions", "elements": elements})
+    elements.append(_button("➕ 하위 작업", AID_ADD_SUBTASK, issue_key))
+    blocks.append({"type": "actions", "elements": elements})
 
     return fallback, blocks
 
@@ -131,8 +132,8 @@ def build_status_board(
             elements.append(_button("진행", AID_BOARD_PROGRESS, t["key"], style="primary"))
         if category != CATEGORY_DONE:
             elements.append(_button("완료", AID_BOARD_DONE, t["key"]))
-        if elements:
-            blocks.append({"type": "actions", "elements": elements})
+        elements.append(_button("➕ 하위 작업", AID_ADD_SUBTASK, t["key"]))
+        blocks.append({"type": "actions", "elements": elements})
 
     blocks.append({"type": "divider"})
     blocks.append(

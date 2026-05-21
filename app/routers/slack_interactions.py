@@ -108,6 +108,24 @@ async def _handle_block_actions(payload: dict, bg: BackgroundTasks) -> Any:
         bg.add_task(_open_batch_modal_task, entry_id=entry_id, trigger_id=trigger_id)
         return JSONResponse({})
 
+    if action_id == "add_subtask":
+        parent_key = (action.get("value") or "").strip()
+        channel = (payload.get("channel") or {}).get("id")
+        message_ts = (payload.get("message") or {}).get("ts")
+        author = (payload.get("user") or {}).get("id")
+        if not (trigger_id and parent_key):
+            return JSONResponse({})
+        from app.services.slack.modal_builder import build_subtask_modal
+
+        view = build_subtask_modal(
+            parent_key=parent_key,
+            channel=channel,
+            thread_ts=message_ts,
+            author_slack_id=author,
+        )
+        bg.add_task(_open_view_task, trigger_id=trigger_id, view=view)
+        return JSONResponse({})
+
     if action_id in ("jira_status_progress", "jira_status_done"):
         issue_key = (action.get("value") or "").strip()
         channel = (payload.get("channel") or {}).get("id")
@@ -170,6 +188,8 @@ async def _handle_view_submission(payload: dict, bg: BackgroundTasks) -> Any:
         return await _handle_batch_submission(view, bg)
     if callback == "jira_transition_select":
         return await _handle_transition_submission(view, bg)
+    if callback == "subtask_submit":
+        return await _handle_subtask_submission(view, bg)
     if callback != "work_item_submit":
         return JSONResponse({})
 
@@ -211,6 +231,20 @@ async def _handle_batch_submission(view: dict, bg: BackgroundTasks) -> Any:
             {"response_action": "errors", "errors": {BID_PROJECT: "등록할 작업이 없습니다."}}
         )
     bg.add_task(_publish_batch_task, rows=valid)
+    return JSONResponse({"response_action": "clear"})
+
+
+async def _handle_subtask_submission(view: dict, bg: BackgroundTasks) -> Any:
+    from app.services.slack.modal_builder import BID_SUBTASK_LINES, parse_subtask_values
+
+    data = parse_subtask_values(view)
+    if not data.get("lines"):
+        return JSONResponse(
+            {"response_action": "errors", "errors": {BID_SUBTASK_LINES: "하위 작업을 입력해주세요."}}
+        )
+    if not data.get("parent_key"):
+        return JSONResponse({})
+    bg.add_task(_create_subtasks_task, **data)
     return JSONResponse({"response_action": "clear"})
 
 
@@ -531,6 +565,99 @@ async def _restore_assignee(container, issue_key: str, prev_account_id: str | No
             await container.issue_svc.assign_issue(issue_key, prev_account_id or None)
     except Exception as e:
         log.warning("transition.assignee_restore_failed", issue=issue_key, error=str(e))
+
+
+async def _open_view_task(*, trigger_id: str, view: dict) -> None:
+    container = get_container()
+    try:
+        await container.slack.web.views_open(trigger_id=trigger_id, view=view)
+    except Exception as e:
+        log.exception("view.open_failed", error=str(e))
+
+
+async def _resolve_assignee_account(container, slack_id: str | None) -> str | None:
+    if not slack_id:
+        return None
+    try:
+        email = await container.slack.get_user_email(slack_id)
+        if not email:
+            return None
+        user = await container.search_svc.lookup_account_by_email(email)
+        return user.account_id if user else None
+    except Exception as e:
+        log.warning("subtask.assignee_lookup_failed", error=str(e))
+        return None
+
+
+async def _create_subtasks_task(
+    *,
+    parent_key: str,
+    channel: str | None,
+    thread_ts: str | None,
+    lines: list[str],
+    assignee_slack_id: str | None,
+) -> None:
+    from app.services.atlassian.jira_issues import CreateIssuePayload
+
+    container = get_container()
+    project = parent_key.rsplit("-", 1)[0]
+
+    # sub-task issue type for the project (cached 1h)
+    subtype = None
+    cache_key = f"subtask_type:{project}"
+    try:
+        subtype = await container.cache.get(cache_key)
+    except Exception:
+        subtype = None
+    if not subtype:
+        try:
+            subtype = await container.issue_svc.get_subtask_type(project)
+            if subtype:
+                await container.cache.set(cache_key, subtype, ttl=3600)
+        except Exception as e:
+            log.warning("subtask.type_lookup_failed", project=project, error=str(e))
+
+    if not subtype:
+        await _notify_task(
+            channel=channel,
+            thread_ts=thread_ts,
+            text=f":warning: {project} 프로젝트에 하위 작업(sub-task) 유형이 없어 생성할 수 없습니다.",
+        )
+        return
+
+    assignee_account = await _resolve_assignee_account(container, assignee_slack_id)
+
+    created, failures = [], []
+    for line in lines:
+        try:
+            issue = await container.issue_svc.create_issue(
+                CreateIssuePayload(
+                    project_key=project,
+                    summary=line[:240],
+                    issue_type=subtype,
+                    parent_key=parent_key,
+                    assignee_account_id=assignee_account,
+                )
+            )
+            created.append(issue)
+        except Exception as e:
+            log.warning("subtask.create_failed", parent=parent_key, error=str(e))
+            failures.append(f"{line[:40]} — {str(e)[:100]}")
+
+    if channel and thread_ts:
+        if created:
+            lines_txt = "\n".join(f"• <{c.url}|{c.key}> {c.summary}" for c in created)
+            await _notify_task(
+                channel=channel,
+                thread_ts=thread_ts,
+                text=f"🧩 *{parent_key}* 하위 작업 {len(created)}개 생성\n{lines_txt}",
+            )
+        if failures:
+            await _notify_task(
+                channel=channel,
+                thread_ts=thread_ts,
+                text=":warning: 하위 작업 생성 실패\n" + "\n".join(f"• {f}" for f in failures),
+            )
 
 
 async def _notify_task(*, channel: str, thread_ts: str, text: str) -> None:

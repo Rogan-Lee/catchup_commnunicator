@@ -262,3 +262,36 @@ def test_parse_handles_empty_state():
 
 def test_unpack_metadata_invalid_json():
     assert unpack_metadata({"private_metadata": "{not json"}) == {}
+
+
+def test_subtask_modal_and_parse_roundtrip():
+    from app.services.slack.modal_builder import (
+        AID_SUBTASK_ASSIGNEE,
+        AID_SUBTASK_LINES,
+        BID_SUBTASK_ASSIGNEE,
+        BID_SUBTASK_LINES,
+        build_subtask_modal,
+        parse_subtask_values,
+    )
+
+    view = build_subtask_modal(
+        parent_key="CAM-7", channel="C1", thread_ts="1.2", author_slack_id="U1"
+    )
+    assert view["callback_id"] == "subtask_submit"
+    # default assignee = author
+    by_block = {b["block_id"]: b for b in view["blocks"] if "block_id" in b}
+    assert by_block[BID_SUBTASK_ASSIGNEE]["element"]["initial_user"] == "U1"
+
+    submitted = {
+        "private_metadata": view["private_metadata"],
+        "state": {
+            "values": {
+                BID_SUBTASK_LINES: {AID_SUBTASK_LINES: {"value": "API 설계\n\n테스트 작성  "}},
+                BID_SUBTASK_ASSIGNEE: {AID_SUBTASK_ASSIGNEE: {"selected_user": "U9"}},
+            }
+        },
+    }
+    data = parse_subtask_values(submitted)
+    assert data["parent_key"] == "CAM-7"
+    assert data["lines"] == ["API 설계", "테스트 작성"]
+    assert data["assignee_slack_id"] == "U9"
