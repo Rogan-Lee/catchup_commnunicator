@@ -21,4 +21,5 @@ COPY alembic ./alembic
 
 EXPOSE 8080
 
-CMD [".venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Cloud Run injects $PORT; default to 8080 for local/Fly compatibility.
+CMD ["sh", "-c", ".venv/bin/uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
