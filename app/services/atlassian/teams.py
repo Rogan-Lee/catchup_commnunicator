@@ -66,11 +66,20 @@ class AtlassianTeamsService:
         return members
 
     async def get_user_primary_team(self, account_id: str) -> Team | None:
+        # Members API is OAuth-only too, so basic auth + static_teams can
+        # never resolve the user's team this way. Short-circuit instead of
+        # spending N round-trips on guaranteed 401s.
+        if self.static_teams is not None:
+            return None
+
         cache_key = f"user_team:{account_id}"
+        sentinel = "__NONE__"
         if self.cache:
             cached = await self.cache.get(cache_key)
-            if cached is not None:
-                return Team.model_validate(cached) if cached else None
+            if cached == sentinel:
+                return None
+            if cached:
+                return Team.model_validate(cached)
 
         teams = await self.list_teams()
         for team in teams:
@@ -87,5 +96,5 @@ class AtlassianTeamsService:
                 return team
 
         if self.cache:
-            await self.cache.set(cache_key, None, ttl=self.teams_ttl)
+            await self.cache.set(cache_key, sentinel, ttl=self.teams_ttl)
         return None
