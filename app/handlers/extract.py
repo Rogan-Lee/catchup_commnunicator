@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -138,7 +139,9 @@ class ExtractHandler:
             return
 
         try:
+            t0 = time.perf_counter()
             actor = await self._resolve_actor(author_slack_id)
+            t1 = time.perf_counter()
             await self._finalize(
                 session,
                 entry=entry,
@@ -146,6 +149,14 @@ class ExtractHandler:
                 message_ts=message_ts,
                 actor=actor,
                 items=normalized,
+            )
+            t2 = time.perf_counter()
+            log.info(
+                "structured.timing",
+                resolve_actor_ms=int((t1 - t0) * 1000),
+                finalize_ms=int((t2 - t1) * 1000),
+                total_ms=int((t2 - t0) * 1000),
+                item_count=len(normalized),
             )
             emit_metric("structured.ok", item_count=len(normalized))
         except Exception as e:
@@ -187,14 +198,22 @@ class ExtractHandler:
         return entry
 
     async def _resolve_actor(self, author_slack_id: str) -> _Actor:
+        t0 = time.perf_counter()
         user = await self._slack_to_atlassian(author_slack_id)
+        t1 = time.perf_counter()
         team = None
         if user:
             try:
                 team = await self.teams_svc.get_user_primary_team(user.account_id)
             except Exception as e:
                 log.warning("extract.team.lookup_failed", error=str(e))
+        t2 = time.perf_counter()
         project_key = self.team_to_project_map.get(team.id) if team else None
+        log.info(
+            "actor.timing",
+            slack_to_atlassian_ms=int((t1 - t0) * 1000),
+            team_lookup_ms=int((t2 - t1) * 1000),
+        )
         return _Actor(user=user, team=team, project_key=project_key)
 
     async def _build_context(self, actor: _Actor) -> ExtractionContext:
@@ -250,6 +269,7 @@ class ExtractHandler:
         actor: _Actor,
         items: list[dict],
     ) -> None:
+        parent_resolve_ms_total = 0
         for idx, item in enumerate(items, start=1):
             team_id = item.get("team_id") or (actor.team.id if actor.team else None)
             project_key = (
@@ -262,6 +282,7 @@ class ExtractHandler:
             slot_dict = dict(item)
             candidates = []
             if project_key:
+                p0 = time.perf_counter()
                 try:
                     candidates = await self.parent_resolver.resolve_candidates(
                         project_key=project_key,
@@ -270,6 +291,7 @@ class ExtractHandler:
                     )
                 except Exception as e:
                     log.warning("extract.parent_resolve.failed", error=str(e))
+                parent_resolve_ms_total += int((time.perf_counter() - p0) * 1000)
             slot_dict["parent_candidates"] = [
                 {"key": c.key, "summary": c.summary, "source": c.source}
                 for c in candidates
@@ -293,13 +315,16 @@ class ExtractHandler:
             session.add(wi)
 
         entry.extraction_status = "completed"
+        db_t0 = time.perf_counter()
         await session.flush()
         await session.refresh(entry, attribute_names=["work_items"])
         await session.commit()
+        db_ms = int((time.perf_counter() - db_t0) * 1000)
 
         fallback, blocks = build_preview_blocks(
             entry, list(entry.work_items), publish_enabled=self.publish_enabled
         )
+        slack_t0 = time.perf_counter()
         try:
             await self.slack.post_message(
                 channel=channel_id,
@@ -309,6 +334,14 @@ class ExtractHandler:
             )
         except Exception as e:
             log.error("extract.slack.post_failed", error=str(e))
+        slack_ms = int((time.perf_counter() - slack_t0) * 1000)
+        log.info(
+            "finalize.timing",
+            parent_resolve_ms=parent_resolve_ms_total,
+            db_ms=db_ms,
+            slack_post_ms=slack_ms,
+            item_count=len(items),
+        )
 
     async def _fail(
         self, session: AsyncSession, entry: StandupEntry | None, e: Exception
