@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     atlassian_api_token: str = ""
     atlassian_team_field_id: str = "customfield_10001"
 
+    # Static team list (JSON). When set, skips the Teams API (which requires
+    # OAuth and 401s on basic auth). Format: [{"id":"...","name":"..."}, ...]
+    atlassian_teams_json: str = ""
+
     # Team → Project mapping (JSON string in env)
     team_project_map: str = "{}"
 
@@ -100,6 +104,21 @@ class Settings(BaseSettings):
             return json.loads(self.team_project_map)
         except json.JSONDecodeError:
             return {}
+
+    @property
+    def static_teams_data(self) -> list[dict] | None:
+        raw = self.atlassian_teams_json.strip()
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list) and all(
+                isinstance(t, dict) and "id" in t and "name" in t for t in data
+            ):
+                return data
+        except json.JSONDecodeError:
+            pass
+        return None
 
 
 @lru_cache

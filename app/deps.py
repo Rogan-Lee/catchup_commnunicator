@@ -10,6 +10,7 @@ from app.services.atlassian.jira_issues import JiraIssueService
 from app.services.atlassian.jira_search import JiraSearchService
 from app.services.atlassian.parent_resolver import ParentTicketResolver
 from app.services.atlassian.teams import AtlassianTeamsService
+from app.services.atlassian.types import Team
 from app.services.cache import CacheLayer, build_redis_client
 from app.services.llm.base import LLMExtractor
 from app.services.llm.gemini import GeminiExtractor
@@ -37,7 +38,15 @@ class Container:
             settings.atlassian_api_token,
         )
 
-        self.teams_svc = AtlassianTeamsService(self.teams_http, cache=self.cache)
+        static_data = settings.static_teams_data
+        static_teams = (
+            [Team(id=t["id"], name=t["name"]) for t in static_data]
+            if static_data is not None
+            else None
+        )
+        self.teams_svc = AtlassianTeamsService(
+            self.teams_http, cache=self.cache, static_teams=static_teams
+        )
         self.search_svc = JiraSearchService(
             self.jira_http, team_field_id=settings.atlassian_team_field_id
         )

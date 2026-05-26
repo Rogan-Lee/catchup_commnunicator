@@ -85,9 +85,12 @@ async def _handle_block_actions(payload: dict, bg: BackgroundTasks) -> Any:
             work_item_id = uuid.UUID(action.get("value", ""))
         except ValueError:
             raise HTTPException(status_code=400, detail="invalid work_item id")
-        # Defer modal open: must complete within ~3s; views.open is fast but
-        # the DB read can stall, so we acknowledge first.
-        bg.add_task(_open_modal_task, work_item_id=work_item_id, trigger_id=trigger_id)
+        # Open the loading modal synchronously so the trigger_id is consumed
+        # immediately (no bg-task scheduling jitter). The heavy lookups then
+        # run in the background and swap the modal via views.update.
+        view_id = await _open_loading_modal_sync(trigger_id)
+        if view_id:
+            bg.add_task(_update_modal_task, work_item_id=work_item_id, view_id=view_id)
         return JSONResponse({})
 
     if action_id == "discard_work_item":
@@ -105,7 +108,9 @@ async def _handle_block_actions(payload: dict, bg: BackgroundTasks) -> Any:
             entry_id = uuid.UUID(action.get("value", ""))
         except ValueError:
             return JSONResponse({})
-        bg.add_task(_open_batch_modal_task, entry_id=entry_id, trigger_id=trigger_id)
+        view_id = await _open_loading_modal_sync(trigger_id)
+        if view_id:
+            bg.add_task(_update_batch_modal_task, entry_id=entry_id, view_id=view_id)
         return JSONResponse({})
 
     if action_id == "add_subtask":
@@ -272,21 +277,25 @@ async def _handle_transition_submission(view: dict, bg: BackgroundTasks) -> Any:
 # --- background tasks
 
 
-async def _open_modal_task(*, work_item_id: uuid.UUID, trigger_id: str) -> None:
-    container = get_container()
+async def _open_loading_modal_sync(trigger_id: str) -> str | None:
+    """Open the skeleton loading modal and return its view_id.
 
-    # trigger_id is only valid for ~3s, and building the real modal needs DB +
-    # Jira round-trips. Open a lightweight loading modal first to consume the
-    # trigger_id, then swap in the full view with views.update (no trigger_id).
+    Called inline from the interactions handler so trigger_id is used while
+    fresh (before background-task scheduling jitter or cold-start delays).
+    """
+    container = get_container()
     try:
         resp = await container.slack.web.views_open(
             trigger_id=trigger_id, view=_loading_modal()
         )
-        view_id = resp["view"]["id"]
+        return resp["view"]["id"]
     except Exception as e:
-        log.exception("modal.open.failed", error=str(e))
-        return
+        log.exception("modal.loading.open_failed", error=str(e))
+        return None
 
+
+async def _update_modal_task(*, work_item_id: uuid.UUID, view_id: str) -> None:
+    container = get_container()
     try:
         async with session_scope() as session:
             wi = await session.scalar(
@@ -668,19 +677,10 @@ async def _notify_task(*, channel: str, thread_ts: str, text: str) -> None:
         log.warning("transition.notify_failed", error=str(e))
 
 
-async def _open_batch_modal_task(*, entry_id: uuid.UUID, trigger_id: str) -> None:
+async def _update_batch_modal_task(*, entry_id: uuid.UUID, view_id: str) -> None:
     from app.services.slack.modal_builder import build_batch_modal
 
     container = get_container()
-    try:
-        resp = await container.slack.web.views_open(
-            trigger_id=trigger_id, view=_loading_modal()
-        )
-        view_id = resp["view"]["id"]
-    except Exception as e:
-        log.exception("batch_modal.open_failed", error=str(e))
-        return
-
     try:
         async with session_scope() as session:
             pending = (

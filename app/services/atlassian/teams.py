@@ -18,12 +18,19 @@ class AtlassianTeamsService:
         http: httpx.AsyncClient,
         cache: CacheLayer | None = None,
         teams_ttl: int = 3600,
+        static_teams: list[Team] | None = None,
     ):
         self.http = http
         self.cache = cache
         self.teams_ttl = teams_ttl
+        # When set, list_teams returns these without touching the (OAuth-only)
+        # public Teams API. Lets us avoid the guaranteed 401 on basic auth.
+        self.static_teams = static_teams
 
     async def list_teams(self) -> list[Team]:
+        if self.static_teams is not None:
+            return list(self.static_teams)
+
         if self.cache:
             cached = await self.cache.get("teams:all")
             if cached:
