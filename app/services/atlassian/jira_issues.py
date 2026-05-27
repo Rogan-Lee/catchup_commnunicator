@@ -117,7 +117,13 @@ class JiraIssueService:
         if payload.assignee_account_id:
             fields["assignee"] = {"accountId": payload.assignee_account_id}
         if payload.team_id and self.team_field_id:
-            fields[self.team_field_id] = payload.team_id
+            # Jira's team custom field expects the bare UUID, not the full ARI.
+            # Accept either form on input.
+            team_value = payload.team_id
+            ari_prefix = "ari:cloud:identity::team/"
+            if team_value.startswith(ari_prefix):
+                team_value = team_value[len(ari_prefix):]
+            fields[self.team_field_id] = team_value
 
         resp = await self.http.post("/rest/api/3/issue", json={"fields": fields})
         if resp.status_code >= 400:
