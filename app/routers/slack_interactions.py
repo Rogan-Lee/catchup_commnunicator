@@ -4,7 +4,7 @@ import json
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, status
+from fastapi import APIRouter, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -29,7 +29,6 @@ log = get_logger(__name__)
 @router.post("/interactions")
 async def slack_interactions(
     request: Request,
-    background_tasks: BackgroundTasks,
     x_slack_signature: str | None = Header(default=None),
     x_slack_request_timestamp: str | None = Header(default=None),
 ) -> Any:
@@ -60,9 +59,9 @@ async def slack_interactions(
     ptype = payload.get("type")
 
     if ptype == "block_actions":
-        return await _handle_block_actions(payload, background_tasks)
+        return await _handle_block_actions(payload)
     if ptype == "view_submission":
-        return await _handle_view_submission(payload, background_tasks)
+        return await _handle_view_submission(payload)
     if ptype == "view_closed":
         return JSONResponse({})
 
@@ -70,7 +69,7 @@ async def slack_interactions(
     return JSONResponse({})
 
 
-async def _handle_block_actions(payload: dict, bg: BackgroundTasks) -> Any:
+async def _handle_block_actions(payload: dict) -> Any:
     actions = payload.get("actions") or []
     if not actions:
         return JSONResponse({})
@@ -90,7 +89,7 @@ async def _handle_block_actions(payload: dict, bg: BackgroundTasks) -> Any:
         # run in the background and swap the modal via views.update.
         view_id = await _open_loading_modal_sync(trigger_id)
         if view_id:
-            bg.add_task(_update_modal_task, work_item_id=work_item_id, view_id=view_id)
+            await _update_modal_task(work_item_id=work_item_id, view_id=view_id)
         return JSONResponse({})
 
     if action_id == "discard_work_item":
@@ -98,7 +97,7 @@ async def _handle_block_actions(payload: dict, bg: BackgroundTasks) -> Any:
             work_item_id = uuid.UUID(action.get("value", ""))
         except ValueError:
             return JSONResponse({})
-        bg.add_task(_discard_task, work_item_id=work_item_id)
+        await _discard_task(work_item_id=work_item_id)
         return JSONResponse({})
 
     if action_id == "publish_all_work_items":
@@ -110,7 +109,7 @@ async def _handle_block_actions(payload: dict, bg: BackgroundTasks) -> Any:
             return JSONResponse({})
         view_id = await _open_loading_modal_sync(trigger_id)
         if view_id:
-            bg.add_task(_update_batch_modal_task, entry_id=entry_id, view_id=view_id)
+            await _update_batch_modal_task(entry_id=entry_id, view_id=view_id)
         return JSONResponse({})
 
     if action_id == "add_subtask":
@@ -128,7 +127,7 @@ async def _handle_block_actions(payload: dict, bg: BackgroundTasks) -> Any:
             thread_ts=message_ts,
             author_slack_id=author,
         )
-        bg.add_task(_open_view_task, trigger_id=trigger_id, view=view)
+        await _open_view_task(trigger_id=trigger_id, view=view)
         return JSONResponse({})
 
     if action_id in ("jira_status_progress", "jira_status_done"):
@@ -144,7 +143,6 @@ async def _handle_block_actions(payload: dict, bg: BackgroundTasks) -> Any:
             channel=channel,
             message_ts=message_ts,
             trigger_id=trigger_id,
-            bg=bg,
         )
 
     from app.services.slack.status_card import (
@@ -171,8 +169,7 @@ async def _handle_block_actions(payload: dict, bg: BackgroundTasks) -> Any:
             if action_id in (AID_BOARD_DONE, AID_BOARD_BULK_DONE)
             else "indeterminate"
         )
-        bg.add_task(
-            _board_transition_task,
+        await _board_transition_task(
             channel=channel,
             message_ts=message_ts,
             all_keys=all_keys,
@@ -185,16 +182,16 @@ async def _handle_block_actions(payload: dict, bg: BackgroundTasks) -> Any:
     return JSONResponse({})
 
 
-async def _handle_view_submission(payload: dict, bg: BackgroundTasks) -> Any:
+async def _handle_view_submission(payload: dict) -> Any:
     view = payload.get("view") or {}
     callback = view.get("callback_id")
 
     if callback == "work_item_batch_submit":
-        return await _handle_batch_submission(view, bg)
+        return await _handle_batch_submission(view)
     if callback == "jira_transition_select":
-        return await _handle_transition_submission(view, bg)
+        return await _handle_transition_submission(view)
     if callback == "subtask_submit":
-        return await _handle_subtask_submission(view, bg)
+        return await _handle_subtask_submission(view)
     if callback != "work_item_submit":
         return JSONResponse({})
 
@@ -221,12 +218,12 @@ async def _handle_view_submission(payload: dict, bg: BackgroundTasks) -> Any:
             }
         )
 
-    bg.add_task(_publish_task, work_item_id=work_item_id, slots=slots)
-    # Close the modal immediately; result is posted to the thread.
+    await _publish_task(work_item_id=work_item_id, slots=slots)
+    # Close the modal; result is posted to the thread.
     return JSONResponse({"response_action": "clear"})
 
 
-async def _handle_batch_submission(view: dict, bg: BackgroundTasks) -> Any:
+async def _handle_batch_submission(view: dict) -> Any:
     from app.services.slack.modal_builder import BID_PROJECT, parse_batch_values
 
     rows = parse_batch_values(view)
@@ -235,11 +232,11 @@ async def _handle_batch_submission(view: dict, bg: BackgroundTasks) -> Any:
         return JSONResponse(
             {"response_action": "errors", "errors": {BID_PROJECT: "등록할 작업이 없습니다."}}
         )
-    bg.add_task(_publish_batch_task, rows=valid)
+    await _publish_batch_task(rows=valid)
     return JSONResponse({"response_action": "clear"})
 
 
-async def _handle_subtask_submission(view: dict, bg: BackgroundTasks) -> Any:
+async def _handle_subtask_submission(view: dict) -> Any:
     from app.services.slack.modal_builder import BID_SUBTASK_LINES, parse_subtask_values
 
     data = parse_subtask_values(view)
@@ -249,11 +246,11 @@ async def _handle_subtask_submission(view: dict, bg: BackgroundTasks) -> Any:
         )
     if not data.get("parent_key"):
         return JSONResponse({})
-    bg.add_task(_create_subtasks_task, **data)
+    await _create_subtasks_task(**data)
     return JSONResponse({"response_action": "clear"})
 
 
-async def _handle_transition_submission(view: dict, bg: BackgroundTasks) -> Any:
+async def _handle_transition_submission(view: dict) -> Any:
     from app.services.slack.status_card import AID_TRANSITION, BID_TRANSITION
 
     meta = unpack_metadata(view)
@@ -264,8 +261,7 @@ async def _handle_transition_submission(view: dict, bg: BackgroundTasks) -> Any:
     transition_id = option.get("value") if option else None
     if not (transition_id and meta.get("issue_key")):
         return JSONResponse({})
-    bg.add_task(
-        _apply_transition_task,
+    await _apply_transition_task(
         issue_key=meta["issue_key"],
         transition_id=transition_id,
         channel=meta.get("channel"),
@@ -375,13 +371,8 @@ async def _start_transition(
     channel: str,
     message_ts: str,
     trigger_id: str | None,
-    bg: BackgroundTasks,
 ) -> Any:
-    """Decide 진행/완료: execute directly when unambiguous, else open a picker.
-
-    The transitions GET runs synchronously so we can branch before the
-    trigger_id (needed for the modal) expires.
-    """
+    """Decide 진행/완료: execute directly when unambiguous, else open a picker."""
     from app.services.slack.status_card import build_transition_modal
 
     container = get_container()
@@ -396,14 +387,13 @@ async def _start_transition(
         transitions = await container.issue_svc.get_transitions(issue_key)
     except Exception as e:
         log.warning("transition.list_failed", issue=issue_key, error=str(e))
-        bg.add_task(_notify_task, channel=channel, thread_ts=message_ts, text=f"❌ {issue_key} 상태 조회 실패")
+        await _notify_task(channel=channel, thread_ts=message_ts, text=f"❌ {issue_key} 상태 조회 실패")
         return JSONResponse({})
 
     candidates = [t for t in transitions if t.to_category == target_category]
     if not candidates:
         available = ", ".join(t.to_status for t in transitions) or "없음"
-        bg.add_task(
-            _notify_task,
+        await _notify_task(
             channel=channel,
             thread_ts=message_ts,
             text=f":warning: {issue_key} 현재 상태에서 변경할 수 없습니다. 가능한 전환: {available}",
@@ -420,8 +410,7 @@ async def _start_transition(
         chosen = candidates[0]
 
     if chosen is not None:
-        bg.add_task(
-            _apply_transition_task,
+        await _apply_transition_task(
             issue_key=issue_key,
             transition_id=chosen.id,
             channel=channel,
@@ -432,8 +421,7 @@ async def _start_transition(
     # Ambiguous: more than one candidate. Let the user choose.
     options = named if len(named) > 1 else candidates
     if not trigger_id:
-        bg.add_task(
-            _apply_transition_task,
+        await _apply_transition_task(
             issue_key=issue_key,
             transition_id=options[0].id,
             channel=channel,

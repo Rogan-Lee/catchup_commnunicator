@@ -4,7 +4,7 @@ import hmac
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 
@@ -60,7 +60,6 @@ class IngestPayload(BaseModel):
 @router.post("/ingest")
 async def standup_ingest(
     payload: IngestPayload,
-    background_tasks: BackgroundTasks,
     authorization: str | None = Header(default=None),
 ) -> JSONResponse:
     settings = get_settings()
@@ -89,7 +88,11 @@ async def standup_ingest(
         text_len=len(payload.text or ""),
     )
 
-    background_tasks.add_task(_process, payload)
+    # Run inline so CPU is allocated for the whole job. Cloud Run throttles
+    # CPU after the response is sent, which makes BackgroundTasks crawl on
+    # request-based billing. The edge function already ACKed Slack, so we
+    # have plenty of time to finish here.
+    await _process(payload)
     return JSONResponse({"ok": True})
 
 
